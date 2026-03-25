@@ -9,9 +9,9 @@ from typing import Optional
 
 @dataclass
 class FunctionNode:
-    module: str          # e.g. "app.billing.views"
-    name: str            # e.g. "calculate_invoice"
-    qualified: str       # module + "." + name
+    module: str          
+    name: str            
+    qualified: str      
     lineno: int
     calls: list[str] = field(default_factory=list)
 
