@@ -1,162 +1,194 @@
-# pipeline_runner.py
 import os
 import json
-import logging
 import argparse
+from datetime import datetime, timezone
+from pathlib import Path
 
-from ingestion.ast_parser import parse_repository, build_edges_csv
-from graph_analysis.graph_loader import import_edges_to_neo4j
-from graph_analysis.community_detection import detect_communities
-from context_builder.extract_functions import extract_functions_source
-from context_builder.context_assembler import assemble_prompt
-from ai_generation.llm_generator import generate_microservice_from_prompt
-from verification.shadow_tester import run_shadow_tests
+def load_env():
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+load_env()
+
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+
+from ingester import scan_repo, write_edges_csv, write_nodes_csv
+from load_graph import (
+    get_driver, wait_for_neo4j, clear_graph, load_edges,
+    drop_gds_graph_if_exists, project_gds_graph, run_louvain,
+    read_clusters, format_clusters,
 )
+from generate_services import (
+    load_clusters, collect_source_for_cluster,
+    build_prompt, call_claude, parse_generated_files, save_service,
+)
+from validators import validate_clusters
 
-def infer_service_name(community_id: str, function_names: list[str]) -> str:
-    """
-    Attempt to infer a meaningful service name from the cluster's function names.
-    Falls back to microservice_{community_id} if no keyword matches.
-    """
-    keywords = {
-        "payment": ["payment", "stripe", "checkout", "charge", "refund", "transaction"],
-        "auth":    ["auth", "login", "logout", "token", "password", "hash", "session"],
-        "user":    ["user", "profile", "account", "register", "signup"],
-        "order":   ["order", "cart", "purchase", "item", "shipping"],
-        "email":   ["email", "notify", "send", "mail", "message"],
-    }
+BASE_DIR      = Path(__file__).parent.parent.parent
+IMPORT_DIR    = BASE_DIR / "import"
+SERVICES_DIR  = BASE_DIR / "services"
+EDGES_CSV     = IMPORT_DIR / "edges.csv"
+NODES_CSV     = IMPORT_DIR / "nodes.csv"
+CLUSTERS_JSON = IMPORT_DIR / "clusters.json"
 
-    fn_names_lower = " ".join(function_names).lower()
-    for service, terms in keywords.items():
-        if any(term in fn_names_lower for term in terms):
-            return f"{service}_service"
-
-    return f"microservice_{community_id}"
+IMPORT_DIR.mkdir(exist_ok=True)
+SERVICES_DIR.mkdir(exist_ok=True)
 
 
-def run_pipeline(repo_path: str, output_dir: str, monolith_url: str = "http://localhost:5000"):
-    """
-    Orchestrator for the full monolith -> microservice pipeline.
+def banner(step: int, title: str):
+    print(f"\n{'='*55}")
+    print(f"  STEP {step}: {title}")
+    print(f"{'='*55}")
 
-    Args:
-        repo_path:     Path to the monolithic Python codebase
-        output_dir:    Folder where outputs (CSV, clusters, microservices) will be saved
-        monolith_url:  URL of the running monolith for shadow testing
-    """
-    os.makedirs(output_dir, exist_ok=True)
 
-    # -------------------------------------------------------------------------
-    # Step 1: Code Extraction (AST Parser)
-    # -------------------------------------------------------------------------
-    logging.info("Step 1: Code Extraction (AST Parser)")
-    edges_csv = os.path.join(output_dir, "edges.csv")
+def step1_scan(repo_path: str):
+    banner(1, "Scanning repo (ingester)")
+    functions = scan_repo(repo_path)
+    if not functions:
+        raise RuntimeError("No functions found. Check repo path.")
+    write_edges_csv(functions, str(EDGES_CSV))
+    write_nodes_csv(functions, str(NODES_CSV))
+    edges_count = sum(len(fn.calls) for fn in functions)
+    print(f"  {len(functions)} functions, {edges_count} edges written.")
+    return functions
 
-    try:
-        if not os.path.exists(edges_csv):
-            parsed_data = parse_repository(repo_path)
-            build_edges_csv(parsed_data, edges_csv)
-            logging.info(f"Edges CSV generated at: {edges_csv}")
-        else:
-            logging.info("edges.csv already exists — skipping ingestion")
-    except Exception as e:
-        logging.error(f"Step 1 failed: {e}")
-        raise
 
-    # -------------------------------------------------------------------------
-    # Step 2: Graph Analysis / Community Detection
-    # -------------------------------------------------------------------------
-    logging.info("Step 2: Graph Analysis / Community Detection")
-    clusters_file = os.path.join(output_dir, "clusters.json")
+def step2_load_graph():
+    banner(2, "Loading graph into Neo4j")
+    driver = get_driver()
+    with driver.session() as session:
+        wait_for_neo4j(driver, retries=5, delay=2)
+        clear_graph(session)
+        load_edges(session, str(EDGES_CSV))
+    driver.close()
+    print("  Graph loaded.")
 
-    try:
-        if not os.path.exists(clusters_file):
-            import_edges_to_neo4j(edges_csv)
-            clusters = detect_communities()
-            with open(clusters_file, "w") as f:
-                json.dump(clusters, f, indent=2)
-            logging.info(f"Clusters saved at: {clusters_file}")
-        else:
-            logging.info("clusters.json already exists — skipping graph analysis")
-            with open(clusters_file, "r") as f:
-                clusters = json.load(f)
-    except Exception as e:
-        logging.error(f"Step 2 failed: {e}")
-        raise
 
-    # -------------------------------------------------------------------------
-    # Step 3: Context Assembly (Prompt Engineering)
-    # -------------------------------------------------------------------------
-    logging.info("Step 3: Context Assembly")
-    cluster_prompts = {}
+def step3_cluster():
+    banner(3, "Running Louvain community detection")
+    driver = get_driver()
+    with driver.session() as session:
+        drop_gds_graph_if_exists(session)
+        project_gds_graph(session)
+        run_louvain(session)
+        raw_clusters = read_clusters(session)
+    driver.close()
+    clusters = format_clusters(raw_clusters)
+    with open(CLUSTERS_JSON, "w", encoding="utf-8") as f:
+        json.dump(clusters, f, indent=2)
+    validate_clusters(clusters)
+    print(f"  {len(clusters)} clusters detected → {CLUSTERS_JSON}")
+    return clusters
 
-    try:
-        for community_id, function_names in clusters.items():
-            if not function_names:
-                logging.warning(f"Community {community_id} is empty — skipping")
-                continue
 
-            service_name   = infer_service_name(community_id, function_names)
-            code_snippets  = extract_functions_source(repo_path, function_names)
-            prompt         = assemble_prompt(service_name, code_snippets)
-            cluster_prompts[community_id] = {
+def step4_generate(repo_path: str, clusters: dict, force: bool = False):
+    banner(4, "Generating microservices via Claude API")
+    generated = 0
+    skipped   = 0
+
+    for cluster_name, cluster_data in clusters.items():
+        service_name = cluster_data["suggested_service"]
+        dir_name     = f"{cluster_name}_{service_name}"
+        service_dir  = SERVICES_DIR / dir_name
+        checkpoint   = service_dir / "_checkpoint.json"
+
+        print(f"\n  [{cluster_name}] {service_name} — {cluster_data['size']} functions")
+
+        # --- Per-service checkpoint: skip if already generated ---
+        if not force and checkpoint.exists():
+            print("    ✓ Already generated — skipping (use --force-regen to override)")
+            skipped += 1
+            continue
+
+        sources = collect_source_for_cluster(cluster_data, repo_path)
+        if not sources:
+            print("    No source extracted — skipping.")
+            continue
+
+        prompt   = build_prompt(cluster_name, service_name, sources)
+        response = call_claude(prompt)
+        files    = parse_generated_files(response)
+
+        if files:
+            save_service(dir_name, files, str(SERVICES_DIR))
+            # Write checkpoint marker
+            checkpoint_data = {
+                "cluster_name": cluster_name,
                 "service_name": service_name,
-                "prompt":       prompt,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "model": "claude-sonnet-4-5",
+                "files": list(files.keys()),
             }
-            logging.info(f"  Assembled prompt for community {community_id} → {service_name}")
-    except Exception as e:
-        logging.error(f"Step 3 failed: {e}")
-        raise
+            checkpoint.write_text(
+                json.dumps(checkpoint_data, indent=2), encoding="utf-8"
+            )
+            generated += 1
+        else:
+            print("    Could not parse response — skipping.")
 
-    logging.info("Code context assembled for all clusters")
+    print(f"\n  Summary: {generated} generated, {skipped} skipped (checkpointed)")
 
-    # -------------------------------------------------------------------------
-    # Step 4: AI Microservice Generation
-    # -------------------------------------------------------------------------
-    logging.info("Step 4: AI Microservice Generation")
-    services_dir = os.path.join(output_dir, "generated_microservices")
-    os.makedirs(services_dir, exist_ok=True)
 
-    try:
-        for community_id, cluster_data in cluster_prompts.items():
-            service_name = cluster_data["service_name"]
-            prompt       = cluster_data["prompt"]
-            service_path = os.path.join(services_dir, service_name)
-            os.makedirs(service_path, exist_ok=True)
+def step5_summary():
+    banner(5, "Summary")
+    if not SERVICES_DIR.exists():
+        print("  No services generated yet.")
+        return
+    services = [d for d in SERVICES_DIR.iterdir() if d.is_dir()]
+    print(f"  {len(services)} microservices generated:")
+    for s in services:
+        files = [f.name for f in s.iterdir() if f.is_file()]
+        print(f"    • {s.name}: {', '.join(files)}")
 
-            generate_microservice_from_prompt(prompt, service_path)
-            logging.info(f"  Microservice generated at: {service_path}")
-    except Exception as e:
-        logging.error(f"Step 4 failed: {e}")
-        raise
 
-    # -------------------------------------------------------------------------
-    # Step 5: Shadow Testing / Verification
-    # -------------------------------------------------------------------------
-    logging.info("Step 5: Shadow Testing / Verification")
+def main():
+    parser = argparse.ArgumentParser(description="Legacy Refactoring Agent — Full Pipeline")
+    parser.add_argument("--repo",        required=True, help="Path to the monolith repo")
+    parser.add_argument("--skip-scan",   action="store_true", help="Skip Step 1 (use existing edges.csv)")
+    parser.add_argument("--skip-neo4j",  action="store_true", help="Skip Steps 2-3 (use existing clusters.json)")
+    parser.add_argument("--only",        help="Only generate one cluster (e.g. cluster_0)")
+    parser.add_argument("--force-regen", action="store_true", help="Re-generate services even if checkpointed")
+    args = parser.parse_args()
 
-    try:
-        verification_results = run_shadow_tests(services_dir, monolith_url=monolith_url)
-        results_file = os.path.join(output_dir, "verification_results.json")
-        with open(results_file, "w") as f:
-            json.dump(verification_results, f, indent=2)
-        logging.info(f"Shadow testing results saved at: {results_file}")
-    except Exception as e:
-        logging.error(f"Step 5 failed: {e}")
-        raise
+    print("\n🔪 Legacy Refactoring Agent — Full Pipeline")
+    print(f"   Repo: {args.repo}\n")
 
-    logging.info("Pipeline completed successfully!")
+    # Step 1
+    if not args.skip_scan:
+        step1_scan(args.repo)
+    else:
+        print("Skipping Step 1 (--skip-scan)")
+
+    # Steps 2-3
+    if not args.skip_neo4j:
+        step2_load_graph()
+        clusters = step3_cluster()
+    else:
+        print("Skipping Steps 2-3 (--skip-neo4j)")
+        if not CLUSTERS_JSON.exists():
+            raise RuntimeError("clusters.json not found. Run without --skip-neo4j first.")
+        with open(CLUSTERS_JSON) as f:
+            clusters = json.load(f)
+        validate_clusters(clusters)
+
+    # Step 4 — filter if --only specified
+    if args.only:
+        clusters = {k: v for k, v in clusters.items() if k == args.only}
+        if not clusters:
+            print(f"Cluster '{args.only}' not found.")
+            return
+
+    step4_generate(args.repo, clusters, force=args.force_regen)
+    step5_summary()
+
+    print("\n✅ Pipeline complete.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run monolith → microservice pipeline")
-    parser.add_argument("--repo",     required=True,                    help="Path to monolithic Python repo")
-    parser.add_argument("--output",   default="./pipeline_output",      help="Output folder")
-    parser.add_argument("--monolith", default="http://localhost:5000",   help="URL of the running monolith for shadow testing")
-    args = parser.parse_args()
-
-    run_pipeline(args.repo, args.output, args.monolith)
+    main()
