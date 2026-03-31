@@ -9,9 +9,9 @@ from typing import Optional
 
 @dataclass
 class FunctionNode:
-    module: str          
-    name: str            
-    qualified: str      
+    module: str          # e.g. "app.billing.views"
+    name: str            # e.g. "calculate_invoice"
+    qualified: str       # module + "." + name
     lineno: int
     calls: list[str] = field(default_factory=list)
 
@@ -204,3 +204,4 @@ def main():
         write_graph_json(functions, str(out / "graph.json"))
 
     print_summary(functions)
+    
