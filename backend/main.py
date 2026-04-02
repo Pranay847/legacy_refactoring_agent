@@ -1,36 +1,46 @@
 """
 main.py — Legacy Refactoring Agent · Pipeline Orchestrator
 ============================================================
-Wires together every module in the pranay-branch backend:
+Wires the pranay-branch backend modules together in order:
 
-  Step 1   →  ingester.py           AST walk → edges.csv
-  Step 2   →  load_graph.py         Neo4j import + Louvain community detection
-  Step 3/4 →  generate_services.py  Context assembly + AI microservice generation
-  Step 5   →  api.py                Shadow-mode dual-fire verification
-  Any step →  validators.py         Output validation
+  Step 1  →  ingester.py
+              scan_repo(repo_root)        → list[FunctionNode]
+              write_edges_csv(fns, path)  → edges.csv
+              write_nodes_csv(fns, path)  → nodes.csv
 
-Usage examples
---------------
-  # Run the full pipeline against a local monolith folder
-  python main.py --repo ./my_monolith
+  Step 2  →  load_graph.py
+              Imports edges.csv + nodes.csv into Neo4j, runs Louvain,
+              writes clusters.json  {cluster_N: {suggested_service, size, members}}
 
-  # Run only a specific step
-  python main.py --repo ./my_monolith --step 1
-  python main.py --step 2 --edges edges.csv
-  python main.py --step 34 --community 1
-  python main.py --step 5 --service payment_service --payload '{"amount": 100}'
+  Step 3/4 → generate_services.py
+              load_clusters(clusters_path) → dict
+              dedup_service_names(clusters)
+              collect_source_for_cluster(cluster, repo_root)
+              build_prompt / call_claude / parse_generated_files / save_service
 
-  # Validate outputs without re-running
-  python main.py --validate --edges edges.csv --output-dir ./new_microservices
+  Step 5  →  api.py
+              shadow_test(payload, monolith_url, microservice_url) → dict
 
-Environment variables (or .env file)
---------------------------------------
-  NEO4J_URI         bolt://localhost:7687
-  NEO4J_USER        neo4j
-  NEO4J_PASS        password
-  ANTHROPIC_API_KEY sk-ant-...
-  MONOLITH_URL      http://localhost:5000
-  MICROSERVICE_URL  http://localhost:8000
+  Any step →  validators.py
+              validate_edges(path) / validate_services(path)
+
+Usage
+-----
+  python main.py --repo ./my_monolith                    # full pipeline
+  python main.py --repo ./my_monolith --step 1           # AST ingest only
+  python main.py --step 2 --output-dir ./output          # Neo4j + Louvain only
+  python main.py --repo ./my_monolith --step 34          # AI generation only
+  python main.py --step 34 --only cluster_0              # one cluster only
+  python main.py --step 5  --service payment_service --payload '{"amount":99}'
+
+Environment / .env
+------------------
+  ANTHROPIC_API_KEY   sk-ant-...
+  NEO4J_URI           bolt://localhost:7687
+  NEO4J_USER          neo4j
+  NEO4J_PASS          password
+  MONOLITH_URL        http://localhost:5000
+  MICROSERVICE_URL    http://localhost:8000
 """
 
 import os
@@ -41,10 +51,18 @@ import logging
 import argparse
 from pathlib import Path
 
-from dotenv import load_dotenv  # pip install python-dotenv
+# ── Load .env (same logic used in generate_services.py) ─────────────────────
+def _load_env():
+    env_path = Path(__file__).parent.parent / ".env"
+    if not env_path.exists():
+        env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
 
-# ── Load .env before anything else ──────────────────────────────────────────
-load_dotenv()
+_load_env()
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -55,180 +73,236 @@ logging.basicConfig(
 log = logging.getLogger("main")
 
 
-# ── Safe module importer ─────────────────────────────────────────────────────
+# ── Safe local import ────────────────────────────────────────────────────────
 def _import(module_name: str):
-    """Import a local module by name; exit with a clear error if missing."""
     import importlib
     try:
         return importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
         log.error("Cannot import '%s': %s", module_name, exc)
-        log.error("Make sure you're running from the backend/ directory.")
+        log.error("Run this script from the backend/ directory.")
         sys.exit(1)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Ingest: AST walk → edges.csv
-# Delegates to: ingester.py
+# STEP 1 — AST ingest  →  edges.csv + nodes.csv
+# Uses: ingester.scan_repo(), write_edges_csv(), write_nodes_csv()
 # ════════════════════════════════════════════════════════════════════════════
 
-def run_step1(repo_dir: str, edges_csv: str = "edges.csv") -> str:
+def run_step1(repo_dir: str, output_dir: str, emit_json: bool = False) -> tuple[str, str]:
     """
-    Calls ingester.py to walk every .py file in repo_dir,
-    extract caller → callee relationships via AST, and write edges.csv.
+    Returns (edges_csv_path, nodes_csv_path).
 
-    Expected ingester.py surface (either works):
-        ingester.extract_edges(repo_dir, output_path) -> str
-        ingester.run(repo_dir, output_path)           -> str
+    ingester.py public surface used:
+        scan_repo(repo_root: str)                          -> list[FunctionNode]
+        write_edges_csv(functions, output_path: str)
+        write_nodes_csv(functions, output_path: str)
+        write_graph_json(functions, output_path: str)      # optional
+        print_summary(functions)
     """
     log.info("━" * 60)
-    log.info("STEP 1 ▶ Ingesting call graph from: %s", repo_dir)
+    log.info("STEP 1 ▶ Scanning repo: %s", repo_dir)
 
     if not Path(repo_dir).exists():
-        log.error("Repo directory not found: %s", repo_dir)
+        log.error("Repo not found: %s", repo_dir)
         sys.exit(1)
 
     ingester = _import("ingester")
 
-    if hasattr(ingester, "extract_edges"):
-        result = ingester.extract_edges(repo_dir, edges_csv)
-    elif hasattr(ingester, "run"):
-        result = ingester.run(repo_dir, edges_csv)
-    else:
-        log.error("ingester.py needs an 'extract_edges' or 'run' function.")
-        sys.exit(1)
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
 
-    out = result if isinstance(result, str) else edges_csv
-    log.info("STEP 1 ✓ edges written → %s", out)
-    return out
+    edges_path = str(out / "edges.csv")
+    nodes_path = str(out / "nodes.csv")
+    json_path  = str(out / "graph.json")
+
+    functions = ingester.scan_repo(repo_dir)
+
+    ingester.write_edges_csv(functions, edges_path)
+    ingester.write_nodes_csv(functions, nodes_path)
+
+    if emit_json:
+        ingester.write_graph_json(functions, json_path)
+        log.info("STEP 1   graph.json → %s", json_path)
+
+    ingester.print_summary(functions)
+
+    log.info("STEP 1 ✓  edges → %s", edges_path)
+    log.info("STEP 1 ✓  nodes → %s", nodes_path)
+
+    return edges_path, nodes_path
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Graph load + Louvain community detection
-# Delegates to: load_graph.py
+# STEP 2 — Neo4j import + Louvain  →  clusters.json
+# Uses: load_graph (your load_graph.py)
 # ════════════════════════════════════════════════════════════════════════════
 
-def run_step2(edges_csv: str = "edges.csv") -> dict:
+def run_step2(edges_path: str, nodes_path: str, output_dir: str) -> str:
     """
-    Calls load_graph.py to:
-      1. Import edges.csv into Neo4j
-      2. Run the Louvain modularity algorithm (GDS library)
-      3. Return {community_id: [function_name, ...]}
+    Loads edges.csv + nodes.csv into Neo4j, runs the Louvain GDS algorithm,
+    and writes clusters.json.
 
-    Expected load_graph.py surface (either works):
-        load_graph.load_and_detect(edges_csv) -> dict[int, list[str]]
-        load_graph.run(edges_csv)             -> dict[int, list[str]]
+    Returns the path to clusters.json.
+
+    Expected load_graph.py surface (adapt if yours differs):
+        load_graph.load_and_cluster(
+            edges_csv:  str,
+            nodes_csv:  str,
+            output_dir: str,
+        ) -> str   # path to clusters.json
     """
     log.info("━" * 60)
-    log.info("STEP 2 ▶ Loading graph into Neo4j + running Louvain")
+    log.info("STEP 2 ▶ Loading into Neo4j + running Louvain")
 
-    if not Path(edges_csv).exists():
-        log.error("edges.csv not found at '%s' — run Step 1 first.", edges_csv)
-        sys.exit(1)
+    for p in (edges_path, nodes_path):
+        if not Path(p).exists():
+            log.error("Required file missing: %s — run Step 1 first.", p)
+            sys.exit(1)
 
     load_graph = _import("load_graph")
 
-    if hasattr(load_graph, "load_and_detect"):
-        communities = load_graph.load_and_detect(edges_csv)
+    clusters_path = None
+
+    # Support common function name variants
+    if hasattr(load_graph, "load_and_cluster"):
+        clusters_path = load_graph.load_and_cluster(edges_path, nodes_path, output_dir)
     elif hasattr(load_graph, "run"):
-        communities = load_graph.run(edges_csv)
+        clusters_path = load_graph.run(edges_path, nodes_path, output_dir)
+    elif hasattr(load_graph, "main"):
+        # Fall back to calling main() with patched argv if no clean API
+        import sys as _sys
+        _sys.argv = ["load_graph.py",
+                     "--edges", edges_path,
+                     "--nodes", nodes_path,
+                     "--output", output_dir]
+        load_graph.main()
+        clusters_path = str(Path(output_dir) / "clusters.json")
     else:
-        log.error("load_graph.py needs a 'load_and_detect' or 'run' function.")
+        log.error("load_graph.py needs a 'load_and_cluster' or 'run' function.")
         sys.exit(1)
 
-    log.info("STEP 2 ✓ Detected %d communities:", len(communities))
-    for cid, funcs in sorted(communities.items(), key=lambda x: -len(x[1])):
-        preview = ", ".join(funcs[:5]) + (" …" if len(funcs) > 5 else "")
-        log.info("   Community %d → %d functions  [%s]", cid, len(funcs), preview)
+    if not clusters_path or not Path(clusters_path).exists():
+        log.error("clusters.json was not produced. Check load_graph.py output.")
+        sys.exit(1)
 
-    # Cache so Steps 3/4 can reload without re-running Neo4j
-    cache_path = "communities.json"
-    with open(cache_path, "w") as f:
-        json.dump({str(k): v for k, v in communities.items()}, f, indent=2)
-    log.info("STEP 2   community map cached → %s", cache_path)
+    # Print a quick summary
+    with open(clusters_path) as f:
+        clusters = json.load(f)
+    log.info("STEP 2 ✓  %d clusters detected → %s", len(clusters), clusters_path)
+    for key, data in sorted(clusters.items()):
+        log.info("   %-12s  %-30s  %d functions",
+                 key, data.get("suggested_service", "?"), data.get("size", 0))
 
-    return communities
+    return clusters_path
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 3 + 4 — Context assembly + AI microservice generation
-# Delegates to: generate_services.py
+# STEP 3 + 4 — Extract source + call Claude  →  /services/<cluster>_<name>/
+# Uses: generate_services.*  (exact functions from generate_services.py)
 # ════════════════════════════════════════════════════════════════════════════
 
 def run_step34(
-    repo_dir: str,
-    communities: dict,
-    community_id: int | None,
-    output_dir: str = "./new_microservices",
-) -> list:
+    clusters_path: str,
+    repo_dir:      str,
+    output_dir:    str,
+    only:          str | None = None,
+) -> list[str]:
     """
-    For each community (or just one if --community is set):
-      - Extracts the source code of every function in that cluster (Step 3)
-      - Sends an assembled prompt to the LLM (Step 4)
-      - Writes the generated FastAPI service files to output_dir/
+    For each cluster in clusters.json:
+      1. Collect source code for every member function  (Step 3)
+      2. Build a strict prompt and call Claude           (Step 4)
+      3. Parse the response and write service files
 
-    Expected generate_services.py surface:
-        generate_services.generate(
-            repo_dir:     str,
-            functions:    list[str],
-            community_id: int,
-            output_dir:   str,
-        ) -> str   # path to the generated service folder
+    Uses directly from generate_services.py:
+        load_clusters(clusters_path)
+        dedup_service_names(clusters)
+        collect_source_for_cluster(cluster, repo_root)
+        build_prompt(cluster_name, service_name, sources)
+        call_claude(prompt)
+        parse_generated_files(response)
+        save_service(service_dir_name, files, output_dir)
     """
     log.info("━" * 60)
-    log.info("STEP 3/4 ▶ Generating microservices → %s", output_dir)
+    log.info("STEP 3/4 ▶ Generating microservices")
+    log.info("  clusters : %s", clusters_path)
+    log.info("  repo     : %s", repo_dir)
+    log.info("  output   : %s", output_dir)
+    if only:
+        log.info("  filter   : %s only", only)
 
-    gen = _import("generate_services")
-
-    if not hasattr(gen, "generate"):
-        log.error("generate_services.py needs a 'generate' function.")
+    if not Path(clusters_path).exists():
+        log.error("clusters.json not found at '%s' — run Step 2 first.", clusters_path)
         sys.exit(1)
 
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    gs = _import("generate_services")
 
-    targets = (
-        {community_id: communities[community_id]}
-        if community_id is not None
-        else communities
-    )
+    clusters = gs.load_clusters(clusters_path)
+    clusters = gs.dedup_service_names(clusters)
+    total    = len(clusters)
 
-    if not targets:
-        log.error("No communities to generate. Run Step 2 first.")
-        sys.exit(1)
+    log.info("  Found %d cluster(s) in %s", total, clusters_path)
 
-    generated_paths = []
-    for cid, funcs in targets.items():
-        log.info("  Processing Community %d (%d functions)…", cid, len(funcs))
+    generated_dirs: list[str] = []
+
+    for cluster_name, cluster_data in clusters.items():
+        if only and cluster_name != only:
+            continue
+
+        service_name = cluster_data["suggested_service"]
+        size         = cluster_data["size"]
+        log.info("  [%s] '%s' — %d functions", cluster_name, service_name, size)
+
+        # Step 3 — extract source
+        sources = gs.collect_source_for_cluster(cluster_data, repo_dir)
+        if not sources:
+            log.warning("  No source extracted for %s — skipping.", cluster_name)
+            continue
+        log.info("  Extracted %d function(s): %s",
+                 len(sources), ", ".join(list(sources.keys())[:5]))
+
+        # Step 4 — call Claude
+        prompt = gs.build_prompt(cluster_name, service_name, sources)
         try:
-            service_path = gen.generate(
-                repo_dir=repo_dir,
-                functions=funcs,
-                community_id=cid,
-                output_dir=output_dir,
-            )
-            generated_paths.append(service_path)
-            log.info("  ✓ Community %d → %s", cid, service_path)
+            response = gs.call_claude(prompt)
         except Exception as exc:
-            log.error("  ✗ Community %d failed: %s", cid, exc, exc_info=True)
+            log.error("  Claude call failed for %s: %s", cluster_name, exc)
+            continue
 
-    log.info("STEP 3/4 ✓ Generated %d service(s)", len(generated_paths))
-    return generated_paths
+        # Parse + save
+        files = gs.parse_generated_files(response)
+        if not files:
+            raw_path = Path(output_dir) / f"{cluster_name}_raw.txt"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(response, encoding="utf-8")
+            log.warning("  No files parsed; raw response → %s", raw_path)
+            continue
+
+        service_dir_name = f"{cluster_name}_{service_name}"
+        gs.save_service(service_dir_name, files, output_dir)
+        generated_dirs.append(str(Path(output_dir) / service_dir_name))
+
+        if total > 1:
+            time.sleep(1)   # avoid Claude rate-limiting
+
+    log.info("STEP 3/4 ✓  Generated %d service(s)", len(generated_dirs))
+    return generated_dirs
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 5 — Shadow testing: dual-fire + output comparison
-# Delegates to: api.py
+# Uses: api.shadow_test()
 # ════════════════════════════════════════════════════════════════════════════
 
 def run_step5(
-    service_name: str,
-    payload: dict,
-    monolith_url: str | None = None,
+    service_name:     str,
+    payload:          dict,
+    monolith_url:     str | None = None,
     microservice_url: str | None = None,
 ) -> bool:
     """
-    Fires the same payload at both the monolith and the generated microservice,
-    compares their outputs, and logs the result to shadow_test_log.jsonl.
+    Fires the same payload at both the monolith and the new microservice,
+    compares their outputs, and appends the result to shadow_test_log.jsonl.
 
     Expected api.py surface:
         api.shadow_test(
@@ -246,7 +320,7 @@ def run_step5(
     api = _import("api")
 
     if not hasattr(api, "shadow_test"):
-        log.error("api.py needs a 'shadow_test' function.")
+        log.error("api.py needs a 'shadow_test(payload, monolith_url, microservice_url)' function.")
         sys.exit(1)
 
     log.info("  Monolith     → %s", monolith_url)
@@ -267,7 +341,7 @@ def run_step5(
         log.error("STEP 5 ✗ FAIL — outputs differ!")
 
     # Append to running test log
-    log_entry = {
+    entry = {
         "timestamp":    time.strftime("%Y-%m-%dT%H:%M:%S"),
         "service":      service_name,
         "payload":      payload,
@@ -276,51 +350,38 @@ def run_step5(
         "match":        match,
     }
     with open("shadow_test_log.jsonl", "a") as f:
-        f.write(json.dumps(log_entry) + "\n")
+        f.write(json.dumps(entry) + "\n")
     log.info("  Result appended → shadow_test_log.jsonl")
 
     return match
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# VALIDATION — runs validators.py against any step's output
-# Delegates to: validators.py
+# VALIDATION — delegates to validators.py
 # ════════════════════════════════════════════════════════════════════════════
 
-def run_validation(edges_csv: str | None, output_dir: str | None) -> list:
-    """
-    Calls validators.py to sanity-check pipeline artifacts.
-
-    Expected validators.py surface (any subset works):
-        validators.validate_edges(path: str)    -> list[str]   # error strings
-        validators.validate_services(path: str) -> list[str]
-    """
+def run_validation(edges_path: str | None, output_dir: str | None) -> list:
     log.info("━" * 60)
     log.info("VALIDATE ▶ Running validators")
 
     validators = _import("validators")
-    errors = []
+    errors: list[str] = []
 
-    if edges_csv and Path(edges_csv).exists():
+    if edges_path and Path(edges_path).exists():
         if hasattr(validators, "validate_edges"):
-            errs = validators.validate_edges(edges_csv)
+            errs = validators.validate_edges(edges_path)
             errors.extend(errs)
-            if errs:
-                log.error("  edges.csv — %d issue(s): %s", len(errs), errs)
-            else:
-                log.info("  ✓ edges.csv passed validation")
+            msg = f"✓ edges.csv clean" if not errs else f"✗ {len(errs)} issue(s): {errs}"
+            log.info("  %s", msg)
 
     if output_dir and Path(output_dir).exists():
         if hasattr(validators, "validate_services"):
             errs = validators.validate_services(output_dir)
             errors.extend(errs)
-            if errs:
-                log.error("  services   — %d issue(s): %s", len(errs), errs)
-            else:
-                log.info("  ✓ Generated services passed validation")
+            msg = f"✓ services clean" if not errs else f"✗ {len(errs)} issue(s): {errs}"
+            log.info("  %s", msg)
 
-    status = "✓ All checks passed" if not errors else f"✗ {len(errors)} issue(s) found"
-    log.info("VALIDATE %s", status)
+    log.info("VALIDATE %s", "✓ All good" if not errors else f"✗ {len(errors)} total issue(s)")
     return errors
 
 
@@ -333,34 +394,55 @@ def run_full_pipeline(args: argparse.Namespace):
 
     log.info("=" * 60)
     log.info("  Legacy Refactoring Agent — Full Pipeline")
-    log.info("  Repo : %s", args.repo)
-    log.info("  Out  : %s", args.output_dir)
+    log.info("  repo   : %s", args.repo)
+    log.info("  output : %s", args.output_dir)
     log.info("=" * 60)
 
-    edges_csv   = run_step1(args.repo, args.edges)
-    communities = run_step2(edges_csv)
-    generated   = run_step34(args.repo, communities, args.community, args.output_dir)
+    # Step 1 — ingest
+    edges_path, nodes_path = run_step1(
+        repo_dir=args.repo,
+        output_dir=args.output_dir,
+        emit_json=args.json,
+    )
 
+    # Step 2 — graph + Louvain
+    clusters_path = run_step2(
+        edges_path=edges_path,
+        nodes_path=nodes_path,
+        output_dir=args.output_dir,
+    )
+
+    # Step 3/4 — AI generation
+    services_dir = str(Path(args.output_dir) / "services")
+    generated = run_step34(
+        clusters_path=clusters_path,
+        repo_dir=args.repo,
+        output_dir=services_dir,
+        only=args.only,
+    )
+
+    # Step 5 — shadow test each generated service
     if args.payload:
         payload    = json.loads(args.payload)
         all_passed = True
         for service_path in generated:
-            passed     = run_step5(
+            passed = run_step5(
                 service_name=Path(service_path).name,
                 payload=payload,
                 monolith_url=args.monolith_url,
                 microservice_url=args.microservice_url,
             )
             all_passed = all_passed and passed
-
         if not all_passed:
             log.error("One or more shadow tests FAILED — see shadow_test_log.jsonl")
 
     if args.validate:
-        run_validation(edges_csv, args.output_dir)
+        run_validation(edges_path, services_dir)
 
     log.info("=" * 60)
-    log.info("  Done in %.1fs  |  services → %s", time.time() - t0, args.output_dir)
+    log.info("  Pipeline complete in %.1fs", time.time() - t0)
+    log.info("  Artifacts    → %s", args.output_dir)
+    log.info("  Services     → %s", services_dir)
     log.info("=" * 60)
 
 
@@ -374,30 +456,48 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--repo",            default=".",
-                   help="Monolith repo path to analyse (default: .)")
-    p.add_argument("--step",            default="all",
-                   choices=["1", "2", "3", "4", "34", "5", "all"],
+
+    # ── shared ────────────────────────────────────────────────────────────
+    p.add_argument("--repo",       default=".",
+                   help="Monolith repo path (Step 1 + 3/4)")
+    p.add_argument("--output-dir", default="./output",
+                   help="Root folder for all generated artifacts (default: ./output)")
+    p.add_argument("--step",       default="all",
+                   choices=["1", "2", "34", "5", "all"],
                    help="Which step to run (default: all)")
-    p.add_argument("--edges",           default="edges.csv",
-                   help="Path to edges.csv (Step 1 output / Step 2 input)")
-    p.add_argument("--community",       type=int, default=None,
-                   help="Target a single community ID for Step 3/4")
-    p.add_argument("--output-dir",      default="./new_microservices",
-                   help="Root folder for generated service files")
-    p.add_argument("--service",         default=None,
-                   help="Service name label for Step 5 shadow test")
-    p.add_argument("--payload",         default=None,
-                   help="JSON string payload for shadow testing")
-    p.add_argument("--monolith-url",    default=None,
+    p.add_argument("--log-level",  default="INFO",
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+
+    # ── step 1 ────────────────────────────────────────────────────────────
+    p.add_argument("--json", action="store_true",
+                   help="Also emit graph.json in Step 1")
+
+    # ── step 2 ────────────────────────────────────────────────────────────
+    p.add_argument("--edges", default=None,
+                   help="Path to edges.csv (overrides default output-dir location)")
+    p.add_argument("--nodes", default=None,
+                   help="Path to nodes.csv (overrides default output-dir location)")
+
+    # ── step 3/4 ──────────────────────────────────────────────────────────
+    p.add_argument("--clusters", default=None,
+                   help="Path to clusters.json (overrides default output-dir location)")
+    p.add_argument("--only", default=None,
+                   help="Only generate this cluster, e.g. --only cluster_0")
+
+    # ── step 5 ────────────────────────────────────────────────────────────
+    p.add_argument("--service",          default=None,
+                   help="Service name label for shadow test logging")
+    p.add_argument("--payload",          default=None,
+                   help='JSON payload for shadow testing, e.g. \'{"amount": 100}\'')
+    p.add_argument("--monolith-url",     default=None,
                    help="Monolith base URL (overrides MONOLITH_URL env)")
-    p.add_argument("--microservice-url",default=None,
+    p.add_argument("--microservice-url", default=None,
                    help="Microservice base URL (overrides MICROSERVICE_URL env)")
-    p.add_argument("--validate",        action="store_true",
-                   help="Run validators.py after the selected step(s)")
-    p.add_argument("--log-level",       default="INFO",
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                   help="Logging verbosity")
+
+    # ── validation ────────────────────────────────────────────────────────
+    p.add_argument("--validate", action="store_true",
+                   help="Run validators.py after selected step(s)")
+
     return p
 
 
@@ -406,23 +506,22 @@ def main():
     args   = parser.parse_args()
     logging.getLogger().setLevel(args.log_level)
 
+    out        = Path(args.output_dir)
+    edges_path = args.edges    or str(out / "edges.csv")
+    nodes_path = args.nodes    or str(out / "nodes.csv")
+    clusters_path = args.clusters or str(out / "clusters.json")
+    services_dir  = str(out / "services")
+
     step = args.step
 
     if step == "1":
-        run_step1(args.repo, args.edges)
+        run_step1(args.repo, args.output_dir, emit_json=args.json)
 
     elif step == "2":
-        run_step2(args.edges)
+        run_step2(edges_path, nodes_path, args.output_dir)
 
-    elif step in ("3", "4", "34"):
-        cache = Path("communities.json")
-        if not cache.exists():
-            log.error("communities.json not found — run Step 2 first.")
-            sys.exit(1)
-        with open(cache) as f:
-            raw = json.load(f)
-        communities = {int(k): v for k, v in raw.items()}
-        run_step34(args.repo, communities, args.community, args.output_dir)
+    elif step == "34":
+        run_step34(clusters_path, args.repo, services_dir, only=args.only)
 
     elif step == "5":
         if not args.payload:
@@ -438,9 +537,9 @@ def main():
     elif step == "all":
         run_full_pipeline(args)
 
-    # Standalone validate (if not already run inside full pipeline)
+    # Standalone validate (skip if already run inside full pipeline)
     if args.validate and step != "all":
-        run_validation(args.edges, args.output_dir)
+        run_validation(edges_path, services_dir)
 
 
 if __name__ == "__main__":
