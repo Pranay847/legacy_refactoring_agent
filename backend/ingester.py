@@ -305,7 +305,8 @@ SUPPORTED_EXTENSIONS = {".py"} | set(EXTENSION_TO_LANG.keys())
 
 SKIP_DIRS = {"__pycache__", ".venv", "venv", "env", "node_modules", ".git",
              "migrations", ".next", "dist", "build", ".tox", ".mypy_cache",
-             ".pytest_cache", "vendor", "target", "bin", "obj", ".gradle"}
+             ".pytest_cache", "vendor", "target", "bin", "obj", ".gradle",
+             "site-packages", ".eggs", "egg-info"}
 
 
 def scan_repo(repo_root: str) -> list[FunctionNode]:
