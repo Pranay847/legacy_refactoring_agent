@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import anthropic
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or os.getenv("API_KEY")
 MODEL             = "claude-sonnet-4-5"
 MAX_TOKENS        = 4096
 
@@ -23,11 +23,11 @@ def dedup_service_names(clusters: dict) -> dict:
     disambiguate them by appending _2, _3, etc.
 
     Example:
-        cluster_0 → "utils", cluster_1 → "utils", cluster_8 → "utils"
+        cluster_0 -> "utils", cluster_1 -> "utils", cluster_8 -> "utils"
         becomes:
-        cluster_0 → "utils", cluster_1 → "utils_2", cluster_8 → "utils_3"
+        cluster_0 -> "utils", cluster_1 -> "utils_2", cluster_8 -> "utils_3"
     """
-    seen: dict[str, int] = {}  # service_name → count of occurrences so far
+    seen: dict[str, int] = {}  # service_name -> count of occurrences so far
     updated = dict(clusters)   # shallow copy so we don't mutate input
 
     for cluster_key in sorted(updated.keys()):
@@ -201,7 +201,7 @@ def main():
                 os.environ.setdefault(k.strip(), v.strip())
 
     global ANTHROPIC_API_KEY
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or os.getenv("API_KEY")
 
     if not ANTHROPIC_API_KEY:
         print("ERROR: ANTHROPIC_API_KEY not set in .env file.")

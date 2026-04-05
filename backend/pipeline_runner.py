@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 def load_env():
-    env_path = Path(__file__).parent.parent.parent / ".env"
+    env_path = Path(__file__).resolve().parent.parent / ".env"
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             if "=" in line and not line.startswith("#"):
@@ -30,7 +30,7 @@ from generate_services import (
 )
 from validators import validate_clusters
 
-BASE_DIR      = Path(__file__).parent.parent.parent
+BASE_DIR      = Path(__file__).resolve().parent.parent
 IMPORT_DIR    = BASE_DIR / "import"
 SERVICES_DIR  = BASE_DIR / "services"
 EDGES_CSV     = IMPORT_DIR / "edges.csv"
@@ -83,7 +83,7 @@ def step3_cluster():
     with open(CLUSTERS_JSON, "w", encoding="utf-8") as f:
         json.dump(clusters, f, indent=2)
     validate_clusters(clusters)
-    print(f"  {len(clusters)} clusters detected → {CLUSTERS_JSON}")
+    print(f"  {len(clusters)} clusters detected -> {CLUSTERS_JSON}")
     return clusters
 
 
@@ -98,17 +98,17 @@ def step4_generate(repo_path: str, clusters: dict, force: bool = False):
         service_dir  = SERVICES_DIR / dir_name
         checkpoint   = service_dir / "_checkpoint.json"
 
-        print(f"\n  [{cluster_name}] {service_name} — {cluster_data['size']} functions")
+        print(f"\n  [{cluster_name}] {service_name} - {cluster_data['size']} functions")
 
         # --- Per-service checkpoint: skip if already generated ---
         if not force and checkpoint.exists():
-            print("    ✓ Already generated — skipping (use --force-regen to override)")
+            print("    [OK] Already generated - skipping (use --force-regen to override)")
             skipped += 1
             continue
 
         sources = collect_source_for_cluster(cluster_data, repo_path)
         if not sources:
-            print("    No source extracted — skipping.")
+            print("    No source extracted - skipping.")
             continue
 
         prompt   = build_prompt(cluster_name, service_name, sources)
@@ -130,7 +130,7 @@ def step4_generate(repo_path: str, clusters: dict, force: bool = False):
             )
             generated += 1
         else:
-            print("    Could not parse response — skipping.")
+            print("    Could not parse response - skipping.")
 
     print(f"\n  Summary: {generated} generated, {skipped} skipped (checkpointed)")
 
@@ -144,11 +144,11 @@ def step5_summary():
     print(f"  {len(services)} microservices generated:")
     for s in services:
         files = [f.name for f in s.iterdir() if f.is_file()]
-        print(f"    • {s.name}: {', '.join(files)}")
+        print(f"    - {s.name}: {', '.join(files)}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Legacy Refactoring Agent — Full Pipeline")
+    parser = argparse.ArgumentParser(description="Legacy Refactoring Agent - Full Pipeline")
     parser.add_argument("--repo",        required=True, help="Path to the monolith repo")
     parser.add_argument("--skip-scan",   action="store_true", help="Skip Step 1 (use existing edges.csv)")
     parser.add_argument("--skip-neo4j",  action="store_true", help="Skip Steps 2-3 (use existing clusters.json)")
@@ -156,7 +156,7 @@ def main():
     parser.add_argument("--force-regen", action="store_true", help="Re-generate services even if checkpointed")
     args = parser.parse_args()
 
-    print("\n🔪 Legacy Refactoring Agent — Full Pipeline")
+    print("\nLegacy Refactoring Agent - Full Pipeline")
     print(f"   Repo: {args.repo}\n")
 
     # Step 1
@@ -177,7 +177,7 @@ def main():
             clusters = json.load(f)
         validate_clusters(clusters)
 
-    # Step 4 — filter if --only specified
+    # Step 4 - filter if --only specified
     if args.only:
         clusters = {k: v for k, v in clusters.items() if k == args.only}
         if not clusters:
@@ -187,7 +187,7 @@ def main():
     step4_generate(args.repo, clusters, force=args.force_regen)
     step5_summary()
 
-    print("\n✅ Pipeline complete.")
+    print("\nPipeline complete.")
 
 
 if __name__ == "__main__":
