@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from ingester import scan_repo, write_edges_csv, write_nodes_csv
-from load_graph import (
+from graph_loader import (
     get_driver, wait_for_neo4j, clear_graph, load_edges,
     drop_gds_graph_if_exists, project_gds_graph, run_louvain,
     read_clusters, format_clusters,
