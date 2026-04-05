@@ -169,10 +169,10 @@ def print_summary(clusters: dict):
     print("  MICROSERVICE CLUSTER SUMMARY")
     print("=" * 55)
     for name, data in clusters.items():
-        print(f"\n  {name}  →  suggested service: '{data['suggested_service']}'")
+        print(f"\n  {name}  ->  suggested service: '{data['suggested_service']}'")
         print(f"  {data['size']} functions:")
         for m in data["members"]:
-            print(f"    • {m['function']}")
+            print(f"    - {m['function']}")
     print("\n" + "=" * 55)
 
 def main():
@@ -227,7 +227,7 @@ def main():
         json.dump(clusters, f, indent=2)
 
     print(f"\nclusters.json written to {out_path}")
-    print("Next step → Phase 3: extract each cluster into a FastAPI microservice.")
+    print("Next step -> Phase 3: extract each cluster into a FastAPI microservice.")
 
 
 if __name__ == "__main__":
