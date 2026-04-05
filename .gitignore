@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project
+.env
+import/uploads/
+import/edges.csv
+import/nodes.csv
+import/graph.json
+import/clusters.json
+import/verification_results.json
+services/
