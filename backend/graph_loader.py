@@ -1,200 +1,234 @@
-# graph_analysis/graph_analysis.py
 import csv
-import logging
+import json
+import os
+import argparse
+import time
+from pathlib import Path
 from neo4j import GraphDatabase
 
-NEO4J_URI      = "bolt://localhost:7687"
-NEO4J_USER     = "neo4j"
-NEO4J_PASSWORD = "password"
+NEO4J_URI      = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER     = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "surgeon1234")
 
-GDS_GRAPH_NAME = "function_call_graph"
-
-logger = logging.getLogger(__name__)
-
+GDS_GRAPH_NAME = "call_graph"
 
 def get_driver():
     return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 
-# -----------------------------------------------------------------------------
-# Graph Loading
-# -----------------------------------------------------------------------------
+def wait_for_neo4j(driver, retries=10, delay=3):
+    """Poll until Neo4j accepts connections."""
+    print("Waiting for Neo4j to be ready...", end="", flush=True)
+    for i in range(retries):
+        try:
+            with driver.session() as s:
+                s.run("RETURN 1")
+            print(" ready!\n")
+            return
+        except Exception:
+            print(".", end="", flush=True)
+            time.sleep(delay)
+    raise RuntimeError("Neo4j did not become ready in time. Is Docker running?")
 
-def _clear_graph(tx):
-    tx.run("MATCH (n) DETACH DELETE n")
-
-
-def _create_function_node(tx, name: str):
-    tx.run("MERGE (f:Function {name: $name})", name=name)
-
-
-def _create_call_edge(tx, caller: str, callee: str, call_count: int):
-    tx.run(
-        """
-        MATCH (a:Function {name: $caller})
-        MATCH (b:Function {name: $callee})
-        MERGE (a)-[r:CALLS]->(b)
-        ON CREATE SET r.call_count = $call_count
-        ON MATCH  SET r.call_count = r.call_count + $call_count
-        """,
-        caller=caller,
-        callee=callee,
-        call_count=call_count
-    )
+def clear_graph(session):
+    print("Clearing existing graph data...")
+    session.run("MATCH (n) DETACH DELETE n")
 
 
-def import_edges_to_neo4j(edges_csv_path: str):
+def load_edges(session, csv_path: str):
     """
-    Reads edges.csv and populates Neo4j with Function nodes and CALLS edges.
-
-    Expected CSV format:
-        caller,callee,call_count
-        checkout_cart,calculate_tax,12
+    Read edges.csv and create (:Function)-[:CALLS]->(:Function) in Neo4j.
+    Uses MERGE so re-running is safe (idempotent).
     """
-    logger.info(f"Importing edges from {edges_csv_path} into Neo4j...")
+    print(f"Loading edges from {csv_path}...")
 
-    driver = get_driver()
+    with open(csv_path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
 
-    try:
-        with driver.session() as session:
-            session.execute_write(_clear_graph)
-            logger.info("Cleared existing graph")
+    total = len(rows)
+    batch_size = 500
 
-            with open(edges_csv_path, newline="") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
+    for i in range(0, total, batch_size):
+        batch = rows[i : i + batch_size]
+        session.run(
+            """
+            UNWIND $rows AS row
+            MERGE (caller:Function {name: row.caller_function, module: row.caller_module})
+            MERGE (callee:Function {name: row.callee_function})
+            ON CREATE SET callee.module = 'external'
+            MERGE (caller)-[:CALLS]->(callee)
+            """,
+            rows=batch,
+        )
+        print(f"  Loaded {min(i + batch_size, total)}/{total} edges...")
 
-            if not rows:
-                raise ValueError(f"edges.csv is empty or malformed: {edges_csv_path}")
+    print(f"Done — {total} edges loaded.\n")
 
-            # First pass: create all unique function nodes
-            unique_functions = set()
-            for row in rows:
-                unique_functions.add(row["caller"])
-                unique_functions.add(row["callee"])
-
-            for fn in unique_functions:
-                session.execute_write(_create_function_node, fn)
-
-            logger.info(f"Created {len(unique_functions)} Function nodes")
-
-            # Second pass: create all CALLS edges
-            for row in rows:
-                session.execute_write(
-                    _create_call_edge,
-                    row["caller"],
-                    row["callee"],
-                    int(row.get("call_count", 1))
-                )
-
-            logger.info(f"Created {len(rows)} CALLS edges")
-
-    except FileNotFoundError:
-        logger.error(f"edges.csv not found at: {edges_csv_path}")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to import edges into Neo4j: {e}")
-        raise
-    finally:
-        driver.close()
-
-    logger.info("Graph import complete")
-
-
-# -----------------------------------------------------------------------------
-# Community Detection
-# -----------------------------------------------------------------------------
-
-def _drop_projection_if_exists(session, graph_name: str):
+def drop_gds_graph_if_exists(session):
     result = session.run(
         "CALL gds.graph.exists($name) YIELD exists",
-        name=graph_name
+        name=GDS_GRAPH_NAME,
     )
     if result.single()["exists"]:
-        session.run("CALL gds.graph.drop($name)", name=graph_name)
-        logger.info(f"Dropped existing GDS projection: {graph_name}")
+        print(f"Dropping existing GDS projection '{GDS_GRAPH_NAME}'...")
+        session.run(
+            "CALL gds.graph.drop($name) YIELD graphName",
+            name=GDS_GRAPH_NAME,
+        )
 
 
-def _project_graph(session, graph_name: str):
+def project_gds_graph(session):
+    """
+    Create an in-memory GDS graph projection from the Neo4j data.
+    This is required before running any GDS algorithm.
+    """
+    print(f"Projecting GDS graph '{GDS_GRAPH_NAME}'...")
     session.run(
         """
         CALL gds.graph.project(
-            $name,
-            'Function',
-            {
-                CALLS: {
-                    orientation: 'UNDIRECTED',
-                    properties: 'call_count'
-                }
-            }
+        $name,
+        'Function',
+        'CALLS'
         )
         """,
-        name=graph_name
+        name=GDS_GRAPH_NAME,
     )
-    logger.info(f"GDS in-memory projection created: {graph_name}")
+    print("Projection ready.\n")
 
-
-def _run_louvain(session, graph_name: str):
+def run_louvain(session):
+    """
+    Run Louvain Modularity community detection.
+    Writes communityId back onto each Function node.
+    """
+    print("Running Louvain community detection...")
     session.run(
         """
-        CALL gds.louvain.write($name, {
-            writeProperty: 'communityId',
-            relationshipWeightProperty: 'call_count'
-        })
+        CALL gds.louvain.write(
+        $name,
+        { writeProperty: 'communityId' }
+        )
         """,
-        name=graph_name
+        name=GDS_GRAPH_NAME,
     )
-    logger.info("Louvain algorithm complete — communityId written to nodes")
+    print("Louvain complete — communityId written to all nodes.\n")
 
-
-def _fetch_communities(session) -> dict:
+def read_clusters(session) -> dict:
+    """
+    Group Function nodes by their communityId.
+    Filter out pure 'external' nodes (stdlib/third-party calls).
+    """
     result = session.run(
         """
         MATCH (f:Function)
-        WHERE f.communityId IS NOT NULL
-        RETURN f.name AS name, toString(f.communityId) AS community_id
-        ORDER BY f.communityId
+        WHERE f.module <> 'external'
+        RETURN f.communityId AS community,
+        f.name        AS function,
+        f.module      AS module
+        ORDER BY community, module, function
         """
     )
 
-    clusters: dict[str, list[str]] = {}
+    clusters: dict[int, list[dict]] = {}
     for record in result:
-        cid = record["community_id"]
-        clusters.setdefault(cid, []).append(record["name"])
+        cid = record["community"]
+        if cid not in clusters:
+            clusters[cid] = []
+        clusters[cid].append({
+            "function": record["function"],
+            "module":   record["module"],
+        })
 
     return clusters
 
 
-def detect_communities() -> dict:
+def format_clusters(raw: dict) -> dict:
     """
-    Full Louvain pipeline:
-      1. Project the graph into GDS memory
-      2. Run Louvain, write communityId back to nodes
-      3. Query and return clusters as { community_id: [function_names] }
+    Rename clusters to friendly names and add summary stats.
+    Largest clusters first.
     """
-    logger.info("Starting community detection (Louvain)...")
+    sorted_clusters = sorted(raw.items(), key=lambda x: len(x[1]), reverse=True)
+
+    output = {}
+    for i, (cid, members) in enumerate(sorted_clusters):
+        # Guess a label from the most common module in the cluster
+        modules = [m["module"].split(".")[0] for m in members]
+        dominant = max(set(modules), key=modules.count)
+
+        output[f"cluster_{i}"] = {
+            "suggested_service": dominant,
+            "community_id": cid,
+            "size": len(members),
+            "members": members,
+        }
+
+    return output
+
+
+def print_summary(clusters: dict):
+    print("=" * 55)
+    print("  MICROSERVICE CLUSTER SUMMARY")
+    print("=" * 55)
+    for name, data in clusters.items():
+        print(f"\n  {name}  ->  suggested service: '{data['suggested_service']}'")
+        print(f"  {data['size']} functions:")
+        for m in data["members"]:
+            print(f"    - {m['function']}")
+    print("\n" + "=" * 55)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Phase 2: Load call graph into Neo4j and detect microservice clusters."
+    )
+    parser.add_argument(
+        "--csv",
+        default="../import/edges.csv",
+        help="Path to edges.csv from Phase 1 (default: ../import/edges.csv)",
+    )
+    parser.add_argument(
+        "--output",
+        default="../import/clusters.json",
+        help="Where to write clusters.json (default: ../import/clusters.json)",
+    )
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help="Skip clearing the graph (useful if re-running Louvain only)",
+    )
+    args = parser.parse_args()
+
+    if not Path(args.csv).exists():
+        print(f"ERROR: edges.csv not found at {args.csv}")
+        print("Run Phase 1 first:  python extract_edges.py <repo> --output-dir ../import")
+        return
 
     driver = get_driver()
-    clusters = {}
 
-    try:
-        with driver.session() as session:
-            _drop_projection_if_exists(session, GDS_GRAPH_NAME)
-            _project_graph(session, GDS_GRAPH_NAME)
-            _run_louvain(session, GDS_GRAPH_NAME)
-            clusters = _fetch_communities(session)
+    with driver.session() as session:
+        wait_for_neo4j(driver)
 
-    except Exception as e:
-        logger.error(f"Community detection failed: {e}")
-        raise
-    finally:
-        driver.close()
+        if not args.keep:
+            clear_graph(session)
 
-    if not clusters:
-        raise ValueError("Louvain returned no communities — check that the graph was imported correctly")
+        load_edges(session, args.csv)
+        drop_gds_graph_if_exists(session)
+        project_gds_graph(session)
+        run_louvain(session)
 
-    logger.info(f"Detected {len(clusters)} communities")
-    for cid, fns in clusters.items():
-        logger.info(f"  Community {cid}: {len(fns)} functions")
+        raw_clusters = read_clusters(session)
 
-    return clusters
+    driver.close()
+
+    clusters = format_clusters(raw_clusters)
+    print_summary(clusters)
+
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(clusters, f, indent=2)
+
+    print(f"\nclusters.json written to {out_path}")
+    print("Next step -> Phase 3: extract each cluster into a FastAPI microservice.")
+
+
+if __name__ == "__main__":
+    main()
