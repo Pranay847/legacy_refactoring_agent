@@ -1,5 +1,6 @@
 import os
 import ast
+import re
 import json
 import argparse
 import textwrap
@@ -45,9 +46,12 @@ def dedup_service_names(clusters: dict) -> dict:
 
     return updated
 
-#Extract source code via AST
-def get_function_source(source: str, func_name: str) -> str | None:
-    tree  = ast.parse(source)
+#Extract source code via AST (Python) or regex (other languages)
+def get_function_source_python(source: str, func_name: str) -> str | None:
+    try:
+        tree  = ast.parse(source)
+    except SyntaxError:
+        return None
     lines = source.splitlines(keepends=True)
     parts = func_name.split(".")
 
@@ -66,6 +70,44 @@ def get_function_source(source: str, func_name: str) -> str | None:
     return find_in_body(tree.body, parts)
 
 
+def get_function_source_generic(source: str, func_name: str) -> str | None:
+    """Extract a function by finding its definition and matching braces."""
+    pattern = re.compile(
+        r"^[^\n]*?\b" + re.escape(func_name) + r"\s*\(", re.MULTILINE
+    )
+    match = pattern.search(source)
+    if not match:
+        return None
+
+    start_pos = match.start()
+    brace_pos = source.find("{", match.end())
+    if brace_pos != -1:
+        depth = 0
+        i = brace_pos
+        while i < len(source):
+            if source[i] == "{":
+                depth += 1
+            elif source[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start_pos:i + 1]
+            i += 1
+
+    # Fallback: grab 50 lines from definition
+    lines = source.splitlines(keepends=True)
+    start_line = source[:start_pos].count("\n")
+    end_line = min(start_line + 50, len(lines))
+    return "".join(lines[start_line:end_line])
+
+
+ALL_EXTENSIONS = [
+    ".py", ".js", ".jsx", ".mjs", ".ts", ".tsx",
+    ".java", ".go", ".rs", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp",
+    ".cs", ".rb", ".php", ".kt", ".kts", ".swift", ".scala", ".dart", ".lua",
+    ".r", ".R",
+]
+
+
 def collect_source_for_cluster(cluster: dict, repo_root: str) -> dict[str, str]:
     root      = Path(repo_root)
     collected = {}
@@ -74,22 +116,34 @@ def collect_source_for_cluster(cluster: dict, repo_root: str) -> dict[str, str]:
         qualified = member["function"]
         module    = member["module"]
 
-        rel_path   = Path(*module.split(".")).with_suffix(".py")
-        candidates = [root / rel_path, root / "src" / rel_path]
+        module_parts = module.split(".")
+        source_file = None
+        for ext in ALL_EXTENSIONS:
+            rel_path = Path(*module_parts).with_suffix(ext)
+            for base in [root, root / "src"]:
+                candidate = base / rel_path
+                if candidate.exists():
+                    source_file = candidate
+                    break
+            if source_file:
+                break
 
-        source_file = next((p for p in candidates if p.exists()), None)
         if not source_file:
-            print(f"  [WARN] Could not find file for module '{module}' — skipping")
+            print(f"  [WARN] Could not find file for module '{module}' - skipping")
             continue
 
         source    = source_file.read_text(encoding="utf-8", errors="replace")
         func_name = qualified[len(module) + 1:]
-        code      = get_function_source(source, func_name)
+
+        if source_file.suffix == ".py":
+            code = get_function_source_python(source, func_name)
+        else:
+            code = get_function_source_generic(source, func_name)
 
         if code:
             collected[qualified] = code
         else:
-            print(f"  [WARN] Could not extract '{qualified}' — skipping")
+            print(f"  [WARN] Could not extract '{qualified}' - skipping")
 
     return collected
 
