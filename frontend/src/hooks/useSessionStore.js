@@ -2,6 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "legacy-refactoring-sessions";
 
+const createInitialPipeline = () => ({
+  scanSummary: null,
+  clusterSummary: null,
+  graph: null,
+  selectedCluster: null,
+  generatedService: null,
+  actionState: {
+    scan: "idle",
+    cluster: "idle",
+    generate: "idle",
+    reset: "idle",
+  },
+  error: null,
+});
+
 const normalizeFiles = (files = []) =>
   files.map((file) => ({
     name: file.name,
@@ -89,6 +104,8 @@ export default function useSessionStore() {
       sourceType,
       sourceLabel,
       repoUrl,
+      repoPath: "",
+      pipeline: createInitialPipeline(),
     };
 
     setSessions((prev) => [newSession, ...prev]);
@@ -139,6 +156,29 @@ export default function useSessionStore() {
     updateSession(sessionId, { status });
   };
 
+  const setSessionRepoPath = (sessionId, repoPath) => {
+    updateSession(sessionId, { repoPath });
+  };
+
+  const resetSessionPipeline = (sessionId) => {
+    updateSession(sessionId, { pipeline: createInitialPipeline() });
+  };
+
+  const clearAllSessions = () => {
+    setSessions([]);
+    setActiveSessionId(null);
+  };
+
+  const deleteSession = (sessionId) => {
+    setSessions((prev) => {
+      const nextSessions = prev.filter((session) => session.id !== sessionId);
+      setActiveSessionId((prevActiveId) =>
+        prevActiveId === sessionId ? nextSessions[0]?.id ?? null : prevActiveId
+      );
+      return nextSessions;
+    });
+  };
+
   return {
     sessions,
     activeSession,
@@ -151,5 +191,9 @@ export default function useSessionStore() {
     setSessionFiles,
     setSessionResults,
     setSessionStatus,
+    setSessionRepoPath,
+    resetSessionPipeline,
+    deleteSession,
+    clearAllSessions,
   };
 }
