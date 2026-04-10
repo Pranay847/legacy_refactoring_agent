@@ -1,6 +1,276 @@
 """
+Shadow Tester — Step 5
+Fires identical requests at the monolith and a generated microservice,
+diffs the responses, and writes results to verification_results.json
+(consumed by GET /api/verification on the monolith).
+
+Usage
+-----
+    python shadow_tester.py [config.json]
+
+If no config file is given it looks for shadow_config.json in the same
+directory.  See shadow_config.example.json for the format.
+
+Output
+------
+Writes  <IMPORT_DIR>/verification_results.json  (same path the monolith
+reads at /api/verification).
+
+The file looks like:
+{
+  "results": [
+    {
+      "id":           "scan_repo",
+      "description":  "POST /api/scan  →  POST /api/scan",
+      "monolith_url": "http://localhost:8000/api/scan",
+      "service_url":  "http://localhost:9000/api/scan",
+      "payload":      { "repo_path": "/tmp/demo" },
+      "monolith_status":  200,
+      "service_status":   200,
+      "monolith_response": { ... },
+      "service_response":  { ... },
+      "diff":         [],          ← list of mismatched field paths
+      "passed":       true,
+      "latency_monolith_ms": 42,
+      "latency_service_ms":  38,
+      "timestamp":    "2025-06-15T14:23:01Z"
+    },
+    ...
+  ],
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "run_at": "2025-06-15T14:23:05Z"
+  }
+}
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import httpx  # pip install httpx
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _deep_diff(a: Any, b: Any, path: str = "") -> list[str]:
+    """Return a list of dotted paths where a and b differ."""
+    diffs: list[str] = []
+
+    if type(a) != type(b):
+        diffs.append(f"{path}: type {type(a).__name__} != {type(b).__name__}")
+        return diffs
+
+    if isinstance(a, dict):
+        all_keys = set(a) | set(b)
+        for k in sorted(all_keys):
+            child = f"{path}.{k}" if path else k
+            if k not in a:
+                diffs.append(f"{child}: missing in monolith")
+            elif k not in b:
+                diffs.append(f"{child}: missing in microservice")
+            else:
+                diffs.extend(_deep_diff(a[k], b[k], child))
+
+    elif isinstance(a, list):
+        if len(a) != len(b):
+            diffs.append(f"{path}: list length {len(a)} != {len(b)}")
+        for i, (x, y) in enumerate(zip(a, b)):
+            diffs.extend(_deep_diff(x, y, f"{path}[{i}]"))
+
+    else:
+        if a != b:
+            diffs.append(f"{path}: {a!r} != {b!r}")
+
+    return diffs
+
+
+def _pick(response_json: Any, keys: list[str] | None) -> Any:
+    """If `keys` is set, compare only those top-level keys."""
+    if keys is None or not isinstance(response_json, dict):
+        return response_json
+    return {k: response_json[k] for k in keys if k in response_json}
+
+
+# ---------------------------------------------------------------------------
+# Core shadow request
+# ---------------------------------------------------------------------------
+
+async def _fire(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    payload: Any,
+    timeout: float,
+) -> tuple[int, Any, float]:
+    """Send one request; return (status, body_as_python, latency_ms)."""
+    t0 = time.perf_counter()
+    try:
+        req_kwargs: dict[str, Any] = {"timeout": timeout}
+        method = method.upper()
+        if method in ("POST", "PUT", "PATCH"):
+            req_kwargs["json"] = payload
+        elif method == "GET" and payload:
+            req_kwargs["params"] = payload
+
+        resp = await client.request(method, url, **req_kwargs)
+        latency_ms = (time.perf_counter() - t0) * 1000
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        return resp.status_code, body, round(latency_ms, 2)
+    except httpx.RequestError as exc:
+        latency_ms = (time.perf_counter() - t0) * 1000
+        return -1, {"error": str(exc)}, round(latency_ms, 2)
+
+
+async def run_shadow_test(
+    test: dict[str, Any],
+    monolith_base: str,
+    service_base: str,
+    timeout: float,
+    compare_keys: list[str] | None,
+) -> dict[str, Any]:
+    """Run a single shadow test case; return a result dict."""
+    method      = test.get("method", "POST").upper()
+    endpoint    = test["endpoint"]
+    payload     = test.get("payload", {})
+    description = test.get("description", f"{method} {endpoint}")
+    test_id     = test.get("id", endpoint.replace("/", "_").strip("_"))
+
+    # Allow per-test override of compare_keys
+    effective_keys = test.get("compare_keys", compare_keys)
+
+    monolith_url = monolith_base.rstrip("/") + "/" + endpoint.lstrip("/")
+    service_url  = service_base.rstrip("/")  + "/" + endpoint.lstrip("/")
+
+    async with httpx.AsyncClient() as client:
+        mono_task    = _fire(client, method, monolith_url, payload, timeout)
+        service_task = _fire(client, method, service_url,  payload, timeout)
+        (mono_status, mono_body, mono_ms), (svc_status, svc_body, svc_ms) = \
+            await asyncio.gather(mono_task, service_task)
+
+    mono_cmp = _pick(mono_body, effective_keys)
+    svc_cmp  = _pick(svc_body,  effective_keys)
+    diff     = _deep_diff(mono_cmp, svc_cmp)
+    passed   = (mono_status == svc_status) and (len(diff) == 0)
+
+    result = {
+        "id":                   test_id,
+        "description":          description,
+        "monolith_url":         monolith_url,
+        "service_url":          service_url,
+        "method":               method,
+        "payload":              payload,
+        "monolith_status":      mono_status,
+        "service_status":       svc_status,
+        "monolith_response":    mono_body,
+        "service_response":     svc_body,
+        "compared_keys":        effective_keys,
+        "diff":                 diff,
+        "passed":               passed,
+        "latency_monolith_ms":  mono_ms,
+        "latency_service_ms":   svc_ms,
+        "timestamp":            _now_iso(),
+    }
+
+    # Print inline progress
+    icon = "✅" if passed else "❌"
+    print(f"  {icon}  [{test_id}]  mono={mono_status}  svc={svc_status}  "
+          f"diff={len(diff)} fields  ({mono_ms:.0f}ms / {svc_ms:.0f}ms)")
+    if diff:
+        for d in diff[:10]:
+            print(f"       ↳  {d}")
+        if len(diff) > 10:
+            print(f"       ↳  … and {len(diff) - 10} more")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Main runner
+# ---------------------------------------------------------------------------
+
+async def main(config_path: Path) -> None:
+    if not config_path.exists():
+        print(f"[shadow_tester] Config not found: {config_path}")
+        print("Create a shadow_config.json  — see shadow_config.example.json for format.")
+        sys.exit(1)
+
+    cfg: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
+
+    monolith_base  = cfg.get("monolith_base",  "http://localhost:8000")
+    service_base   = cfg.get("service_base",   "http://localhost:9000")
+    output_path    = Path(cfg.get("output_path", "import_data/verification_results.json"))
+    timeout        = float(cfg.get("timeout_seconds", 10.0))
+    compare_keys   = cfg.get("compare_keys")          # None ⇒ full diff
+    tests: list[dict] = cfg.get("tests", [])
+
+    if not tests:
+        print("[shadow_tester] No tests defined in config.")
+        sys.exit(0)
+
+    print(f"\n{'='*60}")
+    print(f"  Shadow Tester")
+    print(f"  Monolith : {monolith_base}")
+    print(f"  Service  : {service_base}")
+    print(f"  Tests    : {len(tests)}")
+    print(f"{'='*60}\n")
+
+    results: list[dict] = []
+    for test in tests:
+        result = await run_shadow_test(
+            test, monolith_base, service_base, timeout, compare_keys
+        )
+        results.append(result)
+
+    passed = sum(1 for r in results if r["passed"])
+    failed = len(results) - passed
+
+    summary = {
+        "total":   len(results),
+        "passed":  passed,
+        "failed":  failed,
+        "run_at":  _now_iso(),
+    }
+
+    output = {"results": results, "summary": summary}
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
+
+    print(f"\n{'='*60}")
+    print(f"  Results  : {passed}/{len(results)} passed")
+    print(f"  Output   : {output_path}")
+    print(f"{'='*60}\n")
+
+    if failed:
+        sys.exit(1)
+
+
+def _cli() -> None:
+    config_arg = sys.argv[1] if len(sys.argv) > 1 else "shadow_config.json"
+    asyncio.run(main(Path(config_arg)))
+
+
+if __name__ == "__main__":
+    _cli()
 Shadow Tester — Parity Testing Middleware
-==========================================
 Intercepts requests destined for the monolith, duplicates them asynchronously
 to a new microservice, compares the responses, and writes results to
 import/verification_results.json.
