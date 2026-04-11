@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  TimerReset,
+  CheckCircle2,
   FileCode2,
   Folder,
   FolderGit2,
   FolderKanban,
   FolderTree,
   History,
+  LoaderCircle,
   PanelLeftClose,
   Plus,
+  RotateCcw,
   Search,
+  Sparkles,
+  Trash2,
+  UploadCloud,
+  Workflow,
 } from "lucide-react";
 
 function formatTimestamp(timestamp) {
@@ -109,7 +117,13 @@ export default function Sidebar({
   onCreateFromGithub,
   searchQuery,
   onSearchChange,
+  onDeleteSession,
   onToggleSidebar,
+  onRepoPathChange,
+  onScan,
+  onCalculateMicroservices,
+  onGenerateMicroservice,
+  onResetWorkspace,
 }) {
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const [isFilesOpen, setIsFilesOpen] = useState(false);
@@ -187,6 +201,13 @@ export default function Sidebar({
         ? "Chat History"
         : "Workspace";
 
+  // Derive upload status for the active session
+  const uploadState = activeSession?.pipeline?.actionState?.upload;
+  const isUploading = uploadState === "running";
+  const hasUploaded = uploadState === "success";
+  const uploadFailed = uploadState === "error";
+  const hasRepoPath = !!(activeSession?.repoPath?.trim());
+
   return (
     <aside className="relative z-20 flex h-full w-full flex-col overflow-visible bg-zinc-950 text-zinc-100">
       <div className="relative z-30 overflow-visible border-b border-zinc-800 px-3 py-3">
@@ -211,6 +232,96 @@ export default function Sidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
+        {activeSession ? (
+          <div className="mb-4 rounded-3xl border border-zinc-800 bg-zinc-900/60 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                  Pipeline Controls
+                </p>
+                <h3 className="mt-2 text-sm font-semibold text-white">Demo Workflow</h3>
+              </div>
+              <div className="rounded-full border border-zinc-800 px-2.5 py-1 text-[11px] uppercase tracking-[0.2em] text-zinc-400">
+                {activeSession.status}
+              </div>
+            </div>
+
+            {/* Upload status indicator */}
+            {isUploading ? (
+              <div className="mt-3 flex items-center gap-2 rounded-2xl border border-emerald-800 bg-emerald-900/30 px-3 py-2 text-xs text-emerald-300">
+                <LoaderCircle size={14} className="animate-spin" />
+                Uploading files to server...
+              </div>
+            ) : hasUploaded && hasRepoPath ? (
+              <div className="mt-3 flex items-center gap-2 rounded-2xl border border-emerald-800 bg-emerald-900/20 px-3 py-2 text-xs text-emerald-400">
+                <CheckCircle2 size={14} />
+                Files uploaded — repo path set automatically
+              </div>
+            ) : uploadFailed ? (
+              <div className="mt-3 flex items-center gap-2 rounded-2xl border border-rose-800 bg-rose-900/20 px-3 py-2 text-xs text-rose-400">
+                Upload failed — enter a repo path manually below
+              </div>
+            ) : null}
+
+            <label className="mt-4 block">
+              <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+                Repository Path
+              </span>
+              <input
+                type="text"
+                value={activeSession.repoPath || ""}
+                onChange={(event) => onRepoPathChange(activeSession.id, event.target.value)}
+                placeholder={
+                  activeSession.sourceType === "upload"
+                    ? "Upload a folder above, or enter a local path"
+                    : "/Users/you/projects/legacy-monolith"
+                }
+                className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+              />
+              <p className="mt-2 text-xs text-zinc-500">
+                {hasUploaded
+                  ? "Auto-set from your upload. You can override with a different local path."
+                  : "Upload a folder to auto-set, or type a local path the backend can read."}
+              </p>
+            </label>
+
+            <div className="mt-4 space-y-2.5">
+              <ActionButton
+                icon={Search}
+                title="Scan"
+                description=""
+                isLoading={activeSession.pipeline?.actionState?.scan === "running"}
+                onClick={onScan}
+                disabled={!hasRepoPath}
+              />
+              <ActionButton
+                icon={Workflow}
+                title="Calculate Microservices"
+                description=""
+                isLoading={activeSession.pipeline?.actionState?.cluster === "running"}
+                onClick={onCalculateMicroservices}
+                disabled={!activeSession.pipeline?.scanSummary}
+              />
+              <ActionButton
+                icon={Sparkles}
+                title="Generate Microservice"
+                description=""
+                isLoading={activeSession.pipeline?.actionState?.generate === "running"}
+                onClick={onGenerateMicroservice}
+                disabled={!activeSession.pipeline?.selectedCluster}
+              />
+              <ActionButton
+                icon={TimerReset}
+                title="Reset Workspace"
+                description=""
+                isLoading={activeSession.pipeline?.actionState?.reset === "running"}
+                onClick={onResetWorkspace}
+                tone="muted"
+              />
+            </div>
+          </div>
+        ) : null}
+
         <div className="flex items-start gap-3">
           <div className="flex flex-col items-start gap-1.5">
             <div className="relative z-40" ref={menuRef}>
@@ -234,11 +345,11 @@ export default function Sidebar({
                     }}
                     className="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-zinc-900"
                   >
-                    <Folder size={18} className="mt-0.5 text-emerald-300" />
+                    <UploadCloud size={18} className="mt-0.5 text-emerald-300" />
                     <span>
-                      <span className="block text-sm font-medium text-white">Add file or folder</span>
+                      <span className="block text-sm font-medium text-white">Upload folder</span>
                       <span className="mt-1 block text-xs text-zinc-400">
-                        Start a new project session from local files.
+                        Upload a project folder — files are sent to the server for scanning.
                       </span>
                     </span>
                   </button>
@@ -357,10 +468,9 @@ export default function Sidebar({
                       );
 
                     return (
-                      <button
+                      <div
                         key={session.id}
-                        onClick={() => onSelect(session.id)}
-                        className={`w-full rounded-2xl border p-3 text-left transition ${
+                        className={`rounded-2xl border p-3 transition ${
                           isActive
                             ? "border-emerald-400 bg-zinc-900"
                             : "border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900"
@@ -370,20 +480,50 @@ export default function Sidebar({
                           {icon}
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-3">
-                              <p className="truncate font-medium text-zinc-100">{session.name}</p>
-                              <span className="shrink-0 text-[11px] uppercase tracking-wide text-zinc-500">
-                                {session.sourceType === "github" ? "Repo" : "Files"}
-                              </span>
+                              <button
+                                type="button"
+                                onClick={() => onSelect(session.id)}
+                                className="min-w-0 flex-1 text-left"
+                              >
+                                <p className="truncate font-medium text-zinc-100">{session.name}</p>
+                              </button>
+                              <div className="flex items-center gap-2">
+                                <span className="shrink-0 text-[11px] uppercase tracking-wide text-zinc-500">
+                                  {session.sourceType === "github" ? "Repo" : "Files"}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const confirmed = window.confirm(
+                                      `Remove project "${session.name}" from saved sessions?`
+                                    );
+                                    if (confirmed) {
+                                      onDeleteSession(session.id);
+                                    }
+                                  }}
+                                  className="flex h-8 w-8 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-500 transition hover:border-rose-400 hover:bg-rose-500/10 hover:text-rose-200"
+                                  aria-label={`Remove ${session.name}`}
+                                  title="Remove project"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
                             </div>
-                            <p className="mt-1 max-h-10 overflow-hidden text-xs text-zinc-400">
-                              {latestMessage?.content ?? "No conversation yet."}
-                            </p>
-                            <p className="mt-3 text-[11px] text-zinc-500">
-                              {formatTimestamp(session.updatedAt || session.createdAt)}
-                            </p>
+                            <button
+                              type="button"
+                              onClick={() => onSelect(session.id)}
+                              className="mt-1 block w-full text-left"
+                            >
+                              <p className="max-h-10 overflow-hidden text-xs text-zinc-400">
+                                {latestMessage?.content ?? "No conversation yet."}
+                              </p>
+                              <p className="mt-3 text-[11px] text-zinc-500">
+                                {formatTimestamp(session.updatedAt || session.createdAt)}
+                              </p>
+                            </button>
                           </div>
                         </div>
-                      </button>
+                      </div>
                     );
                   })
                 )}
@@ -397,5 +537,51 @@ export default function Sidebar({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ActionButton({
+  icon: Icon,
+  title,
+  description,
+  isLoading = false,
+  disabled = false,
+  tone = "default",
+  onClick,
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || isLoading}
+      className={`flex w-full items-start gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+        tone === "muted"
+          ? "border-zinc-800 bg-zinc-950 text-zinc-200 hover:bg-zinc-900"
+          : "border-zinc-800 bg-zinc-950 text-zinc-100 hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-zinc-900"
+      } disabled:cursor-not-allowed disabled:opacity-50`}
+    >
+      <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-2xl bg-zinc-900">
+        {isLoading ? (
+          <LoaderCircle size={16} className="animate-spin text-emerald-300" />
+        ) : (
+          <Icon size={16} className={tone === "muted" ? "text-zinc-400" : "text-emerald-300"} />
+        )}
+      </div>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2 text-sm font-medium text-white">
+          {title}
+          {isLoading ? (
+            <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-300">
+              Running
+            </span>
+          ) : null}
+        </span>
+        <span className="mt-1 block text-xs leading-5 text-zinc-400">{description}</span>
+      </span>
+      <RotateCcw
+        size={14}
+        className={`mt-1 shrink-0 text-zinc-600 transition ${isLoading ? "opacity-0" : "opacity-100"}`}
+      />
+    </button>
   );
 }
