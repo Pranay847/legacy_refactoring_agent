@@ -1,0 +1,39 @@
+{
+  "_comment": "Shadow Tester configuration. Copy to shadow_config.json and edit.",
+
+  "monolith_base": "http://localhost:8000",
+  "service_base":  "http://localhost:9000",
+
+  "output_path": "import_data/verification_results.json",
+
+  "timeout_seconds": 10,
+
+  "_comment_compare_keys": "Optional. If set, only these top-level response keys are diffed. Omit the field (or set null) to compare full responses.",
+  "compare_keys": ["status", "functions", "edges"],
+
+  "tests": [
+    {
+      "id": "health_check",
+      "description": "GET /api/status — both servers should be reachable",
+      "method": "GET",
+      "endpoint": "/api/status",
+      "payload": {},
+      "compare_keys": ["step1_done", "step2_done"]
+    },
+    {
+      "id": "scan_repo",
+      "description": "POST /api/scan — function + edge counts must match",
+      "method": "POST",
+      "endpoint": "/api/scan",
+      "payload": { "repo_path": "/tmp/demo_repo" },
+      "compare_keys": ["functions", "edges"]
+    },
+    {
+      "id": "list_services",
+      "description": "GET /api/services — service list must be identical",
+      "method": "GET",
+      "endpoint": "/api/services",
+      "payload": {}
+    }
+  ]
+}

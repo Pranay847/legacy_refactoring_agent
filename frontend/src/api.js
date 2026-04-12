@@ -1,5 +1,15 @@
 const API_BASE = "http://localhost:8000/api";
 
+async function parseJsonResponse(response, fallbackMessage) {
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(data?.detail || data?.message || fallbackMessage);
+  }
+
+  return data;
+}
+
 export async function uploadSessionFiles(sessionId, files) {
   const formData = new FormData();
   formData.append("session_id", sessionId);
@@ -13,11 +23,7 @@ export async function uploadSessionFiles(sessionId, files) {
     body: formData,
   });
 
-  if (!response.ok) {
-    throw new Error("Failed to upload files");
-  }
-
-  return response.json();
+  return parseJsonResponse(response, "Failed to upload files");
 }
 
 export async function sendChatMessage(sessionId, message) {
@@ -32,9 +38,61 @@ export async function sendChatMessage(sessionId, message) {
     }),
   });
 
-  if (!response.ok) {
-    throw new Error("Failed to send message");
-  }
+  return parseJsonResponse(response, "Failed to send message");
+}
 
-  return response.json();
+export async function scanRepository(repoPath) {
+  const response = await fetch(`${API_BASE}/scan`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ repo_path: repoPath }),
+  });
+
+  return parseJsonResponse(response, "Failed to scan repository");
+}
+
+export async function calculateMicroservices() {
+  const response = await fetch(`${API_BASE}/cluster`, {
+    method: "POST",
+  });
+
+  return parseJsonResponse(response, "Failed to calculate microservices");
+}
+
+export async function fetchGraph() {
+  const response = await fetch(`${API_BASE}/graph`);
+  return parseJsonResponse(response, "Failed to load graph");
+}
+
+export async function generateMicroservice(clusterName, repoPath) {
+  const response = await fetch(`${API_BASE}/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      cluster_name: clusterName,
+      repo_path: repoPath,
+    }),
+  });
+
+  return parseJsonResponse(response, "Failed to generate microservice");
+}
+
+export async function fetchServiceFile(serviceName, fileName) {
+  const response = await fetch(
+    `${API_BASE}/services/${encodeURIComponent(serviceName)}/${encodeURIComponent(fileName)}`
+  );
+
+  return parseJsonResponse(response, "Failed to load generated file");
+}
+
+export async function resetWorkspace() {
+  const response = await fetch(`${API_BASE}/reset`, {
+    method: "POST",
+  });
+
+  return parseJsonResponse(response, "Failed to reset workspace");
 }
