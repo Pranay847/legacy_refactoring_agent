@@ -10,6 +10,7 @@ import {
   fetchGraph,
   fetchServiceFile,
   generateMicroservice,
+  listServices,
   resetWorkspace,
   scanRepository,
   uploadSessionFiles,
@@ -34,6 +35,39 @@ function deriveProjectNameFromFiles(files) {
   return fileName || "Untitled Project";
 }
 
+// Directories and file extensions to exclude from uploads
+const IGNORED_DIRS = new Set([
+  "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
+  ".env", "dist", "build", ".next", ".nuxt", "coverage",
+  ".idea", ".vscode", ".DS_Store", "vendor", "target",
+  "bin", "obj", ".tox", ".mypy_cache", ".pytest_cache",
+]);
+
+const SOURCE_EXTENSIONS = new Set([
+  ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs",
+  ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift",
+  ".kt", ".scala", ".lua", ".r", ".m", ".sql", ".sh", ".bash",
+  ".json", ".yaml", ".yml", ".toml", ".xml", ".html", ".css",
+  ".txt", ".md", ".cfg", ".ini", ".env", ".dockerfile",
+  ".gitignore", ".editorconfig",
+]);
+
+function filterSourceFiles(files) {
+  return files.filter((file) => {
+    const path = file.webkitRelativePath || file.name;
+    const segments = path.split("/");
+
+    // Exclude files inside ignored directories
+    if (segments.some((seg) => IGNORED_DIRS.has(seg))) return false;
+
+    // Include files with recognised source/config extensions
+    const lastDot = file.name.lastIndexOf(".");
+    if (lastDot === -1) return false; // skip extensionless files
+    const ext = file.name.slice(lastDot).toLowerCase();
+    return SOURCE_EXTENSIONS.has(ext);
+  });
+}
+
 function createInitialPipeline() {
   return {
     scanSummary: null,
@@ -45,6 +79,7 @@ function createInitialPipeline() {
       scan: "idle",
       cluster: "idle",
       generate: "idle",
+      generateAll: "idle",
       reset: "idle",
       upload: "idle",
     },
@@ -134,10 +169,30 @@ export default function App() {
   };
 
   const handleFilesPicked = async (event) => {
-    const selectedFiles = Array.from(event.target.files || []);
-    if (selectedFiles.length === 0) return;
+    const rawFiles = Array.from(event.target.files || []);
+    if (rawFiles.length === 0) return;
 
-    const defaultName = deriveProjectNameFromFiles(selectedFiles);
+    // Filter to source code files only (skips node_modules, .git, images, etc.)
+    const selectedFiles = filterSourceFiles(rawFiles);
+    const skipped = rawFiles.length - selectedFiles.length;
+
+    if (selectedFiles.length === 0) {
+      // All files were filtered out — nothing useful to upload
+      const tempSession = store.createSession({
+        name: deriveProjectNameFromFiles(rawFiles),
+        sourceType: "upload",
+        sourceLabel: "local file or folder",
+        files: [],
+      });
+      store.addMessage(tempSession.id, {
+        role: "assistant",
+        content: `All ${rawFiles.length} files were filtered out (non-source files like node_modules, images, etc.). Try uploading a folder that contains source code.`,
+      });
+      event.target.value = "";
+      return;
+    }
+
+    const defaultName = deriveProjectNameFromFiles(rawFiles);
     const session = store.createSession({
       name: defaultName,
       sourceType: "upload",
@@ -155,8 +210,15 @@ export default function App() {
     }));
     store.setSessionStatus(session.id, "uploading");
 
+    if (skipped > 0) {
+      store.addMessage(session.id, {
+        role: "assistant",
+        content: `Filtered upload: sending ${selectedFiles.length} source files (skipped ${skipped} non-source files like node_modules, images, etc.)`,
+      });
+    }
+
     try {
-      const data = await uploadSessionFiles(session.id, selectedFiles);
+      const data = await uploadSessionFiles(session.id, selectedFiles, defaultName);
 
       // Store the backend repo path so Scan uses it automatically
       const serverRepoPath = data.repo_path || "";
@@ -447,6 +509,104 @@ export default function App() {
     }
   };
 
+  const handleGenerateAllMicroservices = async () => {
+    const session = store.activeSession;
+    if (!session) return;
+
+    const repoPath = session.repoPath.trim();
+    const clusters = session.pipeline?.clusterSummary?.clusters;
+
+    if (!clusters || Object.keys(clusters).length === 0) {
+      store.addMessage(session.id, {
+        role: "assistant",
+        content: "No clusters available. Run Calculate Microservices first.",
+      });
+      return;
+    }
+
+    const clusterNames = Object.keys(clusters);
+    setPipelineAction(session.id, "generateAll", "running");
+    store.setSessionStatus(session.id, "generating all");
+
+    store.addMessage(session.id, {
+      role: "assistant",
+      content: `Starting batch generation for ${clusterNames.length} clusters...`,
+    });
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const clusterName of clusterNames) {
+      try {
+        const generated = await generateMicroservice(clusterName, repoPath);
+        successCount++;
+
+        store.addMessage(session.id, {
+          role: "assistant",
+          content: `✓ Generated ${generated.service_name} from ${generated.cluster} (${successCount}/${clusterNames.length})`,
+        });
+      } catch (error) {
+        console.error(`Failed to generate ${clusterName}:`, error);
+        failCount++;
+
+        store.addMessage(session.id, {
+          role: "assistant",
+          content: `✗ Failed to generate ${clusterName}: ${error.message}`,
+        });
+      }
+    }
+
+    const summary = failCount === 0
+      ? `All ${successCount} microservices generated successfully!`
+      : `Batch generation complete: ${successCount} succeeded, ${failCount} failed.`;
+
+    store.addMessage(session.id, {
+      role: "assistant",
+      content: summary,
+    });
+
+    // Fetch all generated services so the UI can display them
+    try {
+      const servicesData = await listServices();
+      const allServices = [];
+
+      for (const svc of servicesData.services || []) {
+        const preferredFile = svc.files.find((f) => f === "main.py") || svc.files[0];
+        let code = "";
+        if (preferredFile) {
+          try {
+            const fileContent = await fetchServiceFile(svc.name, preferredFile);
+            code = fileContent.content || "";
+          } catch {
+            code = "// Failed to load file content";
+          }
+        }
+
+        allServices.push({
+          serviceName: svc.name,
+          dir: svc.name,
+          files: svc.files,
+          activeFile: preferredFile ?? null,
+          code,
+        });
+      }
+
+      updatePipeline(session.id, (pipeline) => ({
+        ...pipeline,
+        generatedServices: allServices,
+        actionState: {
+          ...pipeline.actionState,
+          generateAll: failCount === 0 ? "success" : "error",
+        },
+      }));
+    } catch (error) {
+      console.error("Failed to fetch services list:", error);
+      setPipelineAction(session.id, "generateAll", failCount === 0 ? "success" : "error");
+    }
+
+    store.setSessionStatus(session.id, failCount === 0 ? "all generated" : "generation partial");
+  };
+
   const handleResetWorkspace = async () => {
     try {
       if (store.activeSessionId) {
@@ -514,6 +674,7 @@ export default function App() {
                 onScan={handleScan}
                 onCalculateMicroservices={handleCalculateMicroservices}
                 onGenerateMicroservice={handleGenerateMicroservice}
+                onGenerateAllMicroservices={handleGenerateAllMicroservices}
                 onResetWorkspace={handleResetWorkspace}
               />
 

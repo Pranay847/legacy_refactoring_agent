@@ -63,7 +63,7 @@ export default function SessionHeader({ session, isSidebarVisible, onToggleSideb
             {session.files.length} files • Status: {session.status}
           </p>
           {session.repoPath ? (
-            <p className="mt-2 text-sm text-zinc-500">Repo path: {session.repoPath}</p>
+            <p className="mt-2 text-sm text-zinc-500">Repo path: {session.name}</p>
           ) : null}
           {session.repoUrl ? <p className="mt-2 text-sm text-zinc-500">{session.repoUrl}</p> : null}
         </div>

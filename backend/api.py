@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List
  
 import importlib
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
  
@@ -194,20 +194,30 @@ def scan_repo(req: ScanRequest):
  
  
 @app.post("/api/ingest/")
-async def ingest_files(
-    session_id: str = Form(...),
-    files: List[UploadFile] = File(...),
-):
+async def ingest_files(request: Request):
     """Ingest uploaded files: save to a temp dir, scan with AST, return results."""
     try:
         pipeline_state["error"] = None
  
+        # Parse multipart form with raised limits (Starlette default is 1000)
+        form = await request.form(max_files=10000, max_fields=1000)
+        session_id = form["session_id"]
+        project_name = form.get("project_name", "") or ""
+        files = form.getlist("files")
+
+        if not files:
+            raise HTTPException(status_code=400, detail="No files uploaded.")
+
         # --- FIX: Clear stale artifacts so chat doesn't use old data ---
         _clear_stale_artifacts()
         _reset_state()
  
-        # Save uploaded files to a temp directory
-        upload_dir = IMPORT_DIR / "uploads" / session_id
+        # Use project name as directory (sanitized), fall back to session_id
+        safe_name = "".join(
+            c if (c.isalnum() or c in "._- ") else "_"
+            for c in project_name
+        ).strip() or session_id
+        upload_dir = IMPORT_DIR / "uploads" / safe_name
         upload_dir.mkdir(parents=True, exist_ok=True)
  
         saved_files = []
@@ -249,13 +259,18 @@ async def ingest_files(
                         "chunks": 0,
                         "summary": "No functions found",
                     })
- 
+
+        # Clean up form resources
+        await form.close()
+
         return {
             "files": file_results,
             "repo_path": str(upload_dir),
             "functions": len(functions),
             "edges": sum(len(fn.calls) for fn in functions),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         pipeline_state["error"] = str(e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -8,6 +8,7 @@ import {
   FolderKanban,
   FolderTree,
   History,
+  Layers,
   LoaderCircle,
   PanelLeftClose,
   Plus,
@@ -123,6 +124,7 @@ export default function Sidebar({
   onScan,
   onCalculateMicroservices,
   onGenerateMicroservice,
+  onGenerateAllMicroservices,
   onResetWorkspace,
 }) {
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
@@ -267,22 +269,33 @@ export default function Sidebar({
               <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
                 Repository Path
               </span>
-              <input
-                type="text"
-                value={activeSession.repoPath || ""}
-                onChange={(event) => onRepoPathChange(activeSession.id, event.target.value)}
-                placeholder={
-                  activeSession.sourceType === "upload"
-                    ? "Upload a folder above, or enter a local path"
-                    : "/Users/you/projects/legacy-monolith"
-                }
-                className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
-              />
-              <p className="mt-2 text-xs text-zinc-500">
-                {hasUploaded
-                  ? "Auto-set from your upload. You can override with a different local path."
-                  : "Upload a folder to auto-set, or type a local path the backend can read."}
-              </p>
+              {hasUploaded && activeSession.repoPath ? (
+                <>
+                  <div className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-100">
+                    {activeSession.name}
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Auto-set from your upload. You can override with a different local path.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={activeSession.repoPath || ""}
+                    onChange={(event) => onRepoPathChange(activeSession.id, event.target.value)}
+                    placeholder={
+                      activeSession.sourceType === "upload"
+                        ? "Upload a folder above, or enter a local path"
+                        : "/Users/you/projects/legacy-monolith"
+                    }
+                    className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                  />
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Upload a folder to auto-set, or type a local path the backend can read.
+                  </p>
+                </>
+              )}
             </label>
 
             <div className="mt-4 space-y-2.5">
@@ -309,6 +322,14 @@ export default function Sidebar({
                 isLoading={activeSession.pipeline?.actionState?.generate === "running"}
                 onClick={onGenerateMicroservice}
                 disabled={!activeSession.pipeline?.selectedCluster}
+              />
+              <ActionButton
+                icon={Layers}
+                title="Generate All"
+                description=""
+                isLoading={activeSession.pipeline?.actionState?.generateAll === "running"}
+                onClick={onGenerateAllMicroservices}
+                disabled={!activeSession.pipeline?.clusterSummary}
               />
               <ActionButton
                 icon={TimerReset}
