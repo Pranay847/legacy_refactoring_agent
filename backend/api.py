@@ -520,8 +520,17 @@ def chat(req: ChatRequest):
  
     system = (
         "You are an expert software architect helping analyze a codebase "
-        "that has been decomposed into microservice clusters via Louvain community detection. "
-        "Answer concisely. If cluster data is available, reference it specifically. "
+        "that has been decomposed into microservice clusters via Louvain community detection.\n\n"
+        "FORMATTING RULES:\n"
+        "- Use **bold** for function names, file names, and key terms.\n"
+        "- Use `inline code` for code identifiers, paths, and short snippets.\n"
+        "- Use bullet lists for listing functions, files, or features.\n"
+        "- Use numbered lists for step-by-step explanations.\n"
+        "- Use headings (## or ###) to separate major sections in longer answers.\n"
+        "- Use fenced code blocks (```python) for multi-line code.\n"
+        "- Keep paragraphs short (2-3 sentences max).\n"
+        "- Be concise but thorough.\n\n"
+        "If cluster data is available, reference specific clusters and their functions. "
         "If only scanned function data is available, use that to answer questions about the codebase.\n\n"
         + repo_info
         + ("Cluster summary:\n" + context_str if context_str else "No codebase data available yet. The user needs to run a scan first.")

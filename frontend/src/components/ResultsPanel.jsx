@@ -471,7 +471,7 @@ export default function ResultsPanel({ session, onSelectCluster }) {
         <div className="mb-6 grid gap-3 md:grid-cols-3">
           <MetricCard label="Functions" value={formatNumber(scanSummary.functions)} tone="accent" />
           <MetricCard label="Dependencies" value={formatNumber(scanSummary.dependencies)} />
-          <MetricCard label="Repository" value={session.name || "Not set"} />
+          <MetricCard label="Project" value={session.name || "Not set"} />
         </div>
       ) : session.results.length === 0 ? (
         <p className="text-sm text-zinc-500">
