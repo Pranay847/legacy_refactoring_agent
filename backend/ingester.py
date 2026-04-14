@@ -258,7 +258,7 @@ def scan_file_generic(repo_root: Path, file_path: Path, lang: str) -> list[Funct
 
     for pattern in patterns:
         for match in pattern.finditer(source):
-            name = match.group("name")
+            name = match.group("n")
             if name in keywords or name.startswith("__"):
                 continue
             lineno = source[:match.start()].count("\n") + 1
@@ -294,7 +294,7 @@ def scan_file_generic(repo_root: Path, file_path: Path, lang: str) -> list[Funct
     for start, end, fn in func_ranges:
         body = "\n".join(lines[start:end])
         for call_match in CALL_PATTERN.finditer(body):
-            callee = call_match.group("name")
+            callee = call_match.group("n")
             if callee not in keywords and callee != fn.name:
                 fn.calls.append(callee)
 
