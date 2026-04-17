@@ -5,6 +5,7 @@ import {
   CircleDot,
   FileCode2,
   FileText,
+  Layers,
   LoaderCircle,
   Sparkles,
   Workflow,
@@ -79,12 +80,16 @@ function MetricCard({ label, value, tone = "default" }) {
     <div
       className={`rounded-2xl border px-4 py-4 ${
         tone === "accent"
-          ? "border-emerald-200 bg-emerald-50"
+          ? "border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/40"
           : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-800/70"
       }`}
     >
       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">{value}</p>
+      <p className={`mt-2 font-semibold ${
+        tone === "accent"
+          ? "text-2xl text-emerald-800 dark:text-emerald-200"
+          : "text-2xl text-zinc-900 dark:text-zinc-100"
+      }`}>{value}</p>
     </div>
   );
 }
@@ -196,33 +201,175 @@ function ClusterGraph({ clusterSummary, graph, selectedCluster, onSelectCluster 
   );
 }
 
-function GenerationPreview({ session }) {
-  const generatedService = session.pipeline?.generatedService;
-  const selectedCluster = session.pipeline?.selectedCluster;
-  const isGenerating = session.pipeline?.actionState?.generate === "running";
-  const members = getClusterMembers(session.pipeline?.graph, selectedCluster);
-  const [visibleCode, setVisibleCode] = useState("");
+function ServiceCodeViewer({ service, isGenerating }) {
+  const [activeFile, setActiveFile] = useState(service?.activeFile || null);
+  const [displayCode, setDisplayCode] = useState("");
+  const [isLoadingFile, setIsLoadingFile] = useState(false);
+  // Cache: { [fileName]: content }
+  const [fileCache, setFileCache] = useState({});
 
+  // Reset when service changes
   useEffect(() => {
-    if (!generatedService?.code) {
-      setVisibleCode("");
+    const defaultFile = service?.activeFile || null;
+    setActiveFile(defaultFile);
+    // Seed cache with the pre-loaded code
+    if (defaultFile && service?.code) {
+      setFileCache({ [defaultFile]: service.code });
+    } else {
+      setFileCache({});
+    }
+  }, [service?.dir]);
+
+  // Fetch file content when activeFile changes
+  useEffect(() => {
+    if (!activeFile || !service?.dir) {
+      setDisplayCode(service?.code || "");
       return;
     }
 
-    setVisibleCode("");
-    let index = 0;
-    const timer = window.setInterval(() => {
-      index += Math.max(8, Math.ceil(generatedService.code.length / 45));
-      setVisibleCode(generatedService.code.slice(0, index));
+    // Check cache first
+    if (fileCache[activeFile] !== undefined) {
+      setDisplayCode(fileCache[activeFile]);
+      return;
+    }
 
-      if (index >= generatedService.code.length) {
-        window.clearInterval(timer);
-      }
-    }, 45);
+    // Fetch from backend
+    let cancelled = false;
+    setIsLoadingFile(true);
+    setDisplayCode("");
 
-    return () => window.clearInterval(timer);
-  }, [generatedService?.code, generatedService?.dir]);
+    import("../api").then(({ fetchServiceFile }) => {
+      fetchServiceFile(service.dir, activeFile)
+        .then((data) => {
+          if (cancelled) return;
+          const content = data.content || "";
+          setFileCache((prev) => ({ ...prev, [activeFile]: content }));
+          setDisplayCode(content);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setDisplayCode("// Failed to load file content");
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingFile(false);
+        });
+    });
 
+    return () => { cancelled = true; };
+  }, [activeFile, service?.dir]);
+
+  return (
+    <div className="rounded-[24px] border border-zinc-200 bg-zinc-950 p-4 text-zinc-100 dark:border-zinc-800">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <FileCode2 size={16} className="text-emerald-300" />
+          <p className="text-sm font-semibold text-white">
+            {activeFile || "main.py"}
+          </p>
+        </div>
+        {isGenerating || isLoadingFile ? (
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-300">
+            <LoaderCircle size={14} className="animate-spin" />
+            {isLoadingFile ? "Loading" : "Generating"}
+          </div>
+        ) : displayCode ? (
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-300">
+            <CheckCircle2 size={14} />
+            Complete
+          </div>
+        ) : null}
+      </div>
+
+      {service?.files?.length > 1 ? (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {service.files.map((fileName) => (
+            <button
+              key={fileName}
+              type="button"
+              onClick={() => setActiveFile(fileName)}
+              className={`rounded-lg px-2.5 py-1 text-xs transition ${
+                activeFile === fileName
+                  ? "bg-emerald-500/20 text-emerald-300"
+                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+              }`}
+            >
+              {fileName}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <pre className="min-h-[320px] max-h-[500px] overflow-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-zinc-200">
+        <code>
+          {displayCode ||
+            (isGenerating
+              ? "# Waiting for generated code..."
+              : isLoadingFile
+                ? "# Loading file..."
+                : "# Generated FastAPI service will appear here after you run Generate Microservice.")}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+function GenerationPreview({ session }) {
+  const generatedService = session.pipeline?.generatedService;
+  const generatedServices = session.pipeline?.generatedServices;
+  const selectedCluster = session.pipeline?.selectedCluster;
+  const isGenerating = session.pipeline?.actionState?.generate === "running";
+  const isGeneratingAll = session.pipeline?.actionState?.generateAll === "running";
+  const members = getClusterMembers(session.pipeline?.graph, selectedCluster);
+  const [activeServiceIndex, setActiveServiceIndex] = useState(0);
+
+  // Reset tab when services change
+  useEffect(() => {
+    setActiveServiceIndex(0);
+  }, [generatedServices?.length]);
+
+  // If we have batch-generated services, show the multi-service view
+  if (generatedServices && generatedServices.length > 0) {
+    const activeService = generatedServices[activeServiceIndex] || generatedServices[0];
+
+    return (
+      <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
+        <div className="mb-4 flex items-center gap-2">
+          <Layers size={18} className="text-emerald-500" />
+          <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-zinc-600 dark:text-zinc-300">
+            Generated Services ({generatedServices.length})
+          </h3>
+          {isGeneratingAll ? (
+            <div className="ml-auto flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-500">
+              <LoaderCircle size={14} className="animate-spin" />
+              Generating
+            </div>
+          ) : null}
+        </div>
+
+        {/* Service tabs */}
+        <div className="mb-4 flex flex-wrap gap-2">
+          {generatedServices.map((svc, index) => (
+            <button
+              key={svc.dir}
+              type="button"
+              onClick={() => setActiveServiceIndex(index)}
+              className={`rounded-2xl border px-3 py-2 text-xs font-medium transition ${
+                index === activeServiceIndex
+                  ? "border-emerald-400 bg-emerald-500/10 text-emerald-300"
+                  : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+              }`}
+            >
+              {svc.serviceName}
+            </button>
+          ))}
+        </div>
+
+        <ServiceCodeViewer service={activeService} isGenerating={false} />
+      </div>
+    );
+  }
+
+  // Fallback: single service or no services yet
   if (!selectedCluster && !generatedService) {
     return (
       <div className="rounded-3xl border border-dashed border-zinc-300 bg-zinc-50 p-6 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
@@ -272,36 +419,7 @@ function GenerationPreview({ session }) {
           </div>
         </div>
 
-        <div className="rounded-[24px] border border-zinc-200 bg-zinc-950 p-4 text-zinc-100 dark:border-zinc-800">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <FileCode2 size={16} className="text-emerald-300" />
-              <p className="text-sm font-semibold text-white">
-                {generatedService?.activeFile || "main.py"}
-              </p>
-            </div>
-            {isGenerating ? (
-              <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-300">
-                <LoaderCircle size={14} className="animate-spin" />
-                Generating
-              </div>
-            ) : generatedService?.code ? (
-              <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-300">
-                <CheckCircle2 size={14} />
-                Complete
-              </div>
-            ) : null}
-          </div>
-
-          <pre className="min-h-[320px] overflow-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-zinc-200">
-            <code>
-              {visibleCode ||
-                (isGenerating
-                  ? "# Waiting for generated code..."
-                  : "# Generated FastAPI service will appear here after you run Generate Microservice.")}
-            </code>
-          </pre>
-        </div>
+        <ServiceCodeViewer service={generatedService} isGenerating={isGenerating} />
       </div>
     </div>
   );
@@ -353,7 +471,7 @@ export default function ResultsPanel({ session, onSelectCluster }) {
         <div className="mb-6 grid gap-3 md:grid-cols-3">
           <MetricCard label="Functions" value={formatNumber(scanSummary.functions)} tone="accent" />
           <MetricCard label="Dependencies" value={formatNumber(scanSummary.dependencies)} />
-          <MetricCard label="Repository" value={scanSummary.repoPath || session.repoPath || "Not set"} />
+          <MetricCard label="Project" value={session.name || "Not set"} />
         </div>
       ) : session.results.length === 0 ? (
         <p className="text-sm text-zinc-500">
