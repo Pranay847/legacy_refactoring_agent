@@ -10,9 +10,12 @@ async function parseJsonResponse(response, fallbackMessage) {
   return data;
 }
 
-export async function uploadSessionFiles(sessionId, files) {
+export async function uploadSessionFiles(sessionId, files, projectName) {
   const formData = new FormData();
   formData.append("session_id", sessionId);
+  if (projectName) {
+    formData.append("project_name", projectName);
+  }
 
   files.forEach((file) => {
     formData.append("files", file, file.webkitRelativePath || file.name);
@@ -95,4 +98,9 @@ export async function resetWorkspace() {
   });
 
   return parseJsonResponse(response, "Failed to reset workspace");
+}
+
+export async function listServices() {
+  const response = await fetch(`${API_BASE}/services`);
+  return parseJsonResponse(response, "Failed to list services");
 }
