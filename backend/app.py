@@ -5,7 +5,7 @@ Wraps the pipeline_runner steps as HTTP endpoints for the React frontend.
  
 Start with:
     cd backend
-    uvicorn api:app --reload --port 8000
+    uvicorn app:app --reload --port 8000
 """
  
 import csv
