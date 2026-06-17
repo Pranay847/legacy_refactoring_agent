@@ -1,14 +1,18 @@
 import csv
 import json
-import os
 import argparse
 import time
 from pathlib import Path
 from neo4j import GraphDatabase
 
-NEO4J_URI      = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER     = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "surgeon1234")
+try:  # central config loads the repo-root .env on import
+    from config import settings
+except ImportError:  # pragma: no cover
+    from backend.config import settings
+
+NEO4J_URI = settings.neo4j_uri
+NEO4J_USER = settings.neo4j_user
+NEO4J_PASSWORD = settings.neo4j_password
 
 GDS_GRAPH_NAME = "call_graph"
 
