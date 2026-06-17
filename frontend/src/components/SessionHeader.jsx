@@ -66,7 +66,7 @@ export default function SessionHeader({
           className="btn-primary"
         >
           <UploadCloud size={16} />
-          Upload New Monolith
+          Upload New Project
         </button>
         {AUTH_ENABLED ? <AccountControls /> : null}
       </div>
