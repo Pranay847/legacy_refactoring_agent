@@ -43,7 +43,7 @@ from pipeline_runner import (
     IMPORT_DIR, SERVICES_DIR, EDGES_CSV, NODES_CSV, CLUSTERS_JSON,
 )
 from validators import validate_clusters
-from generate_services import dedup_service_names
+from generate_services import collect_source_for_cluster, dedup_service_names
 
 # Auth + billing + rate limiting (all gated: no-ops until their keys are configured).
 from auth import install_auth, get_principal, Principal
@@ -441,6 +441,56 @@ def get_clusters():
         raise HTTPException(status_code=422, detail=f"Invalid clusters.json: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/clusters/{cluster_name}/source")
+def get_cluster_source(cluster_name: str, repo_path: str | None = None):
+    """Return the ORIGINAL monolith source for the functions in a cluster.
+
+    This is the pre-refactor code, extracted straight from the uploaded repo,
+    so the UI can show it side-by-side with the generated microservice (instead
+    of mirroring the generated file on both panes).
+    """
+    clusters = pipeline_state["clusters"]
+    if clusters is None:
+        if CLUSTERS_JSON.exists():
+            with open(CLUSTERS_JSON, encoding="utf-8") as f:
+                clusters = json.load(f)
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="No clusters available. Run clustering first.",
+            )
+
+    if cluster_name not in clusters:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Cluster '{cluster_name}' not found. Available: {list(clusters.keys())}",
+        )
+
+    repo = (repo_path or "").strip() or pipeline_state.get("repo_path")
+    if not repo:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository path unknown. Scan or upload a monolith first.",
+        )
+
+    cluster = clusters[cluster_name]
+    try:
+        sources = collect_source_for_cluster(cluster, repo)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read original source: {e}")
+
+    combined = "\n\n".join(
+        f"# --- {name} ---\n{code}" for name, code in sources.items()
+    ).strip()
+
+    return {
+        "cluster": cluster_name,
+        "service": cluster.get("suggested_service"),
+        "functions": list(sources.keys()),
+        "source": combined or "# No original source could be extracted for this cluster.",
+    }
  
  
 @app.post("/api/generate", dependencies=[rate_limit("generate"), meter("generate")])

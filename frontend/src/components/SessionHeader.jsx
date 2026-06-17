@@ -5,6 +5,8 @@ import AccountControls from "./AccountControls";
 export default function SessionHeader({
   session,
   onUploadClick,
+  title = "Dashboard",
+  subtitle = "Overview of your monolith analysis",
 }) {
   return (
     <header
@@ -49,10 +51,10 @@ export default function SessionHeader({
       {/* Center: Page Title */}
       <div className="flex-1">
         <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>
-          Dashboard
+          {title}
         </h1>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          Overview of your monolith analysis
+          {subtitle}
         </p>
       </div>
 

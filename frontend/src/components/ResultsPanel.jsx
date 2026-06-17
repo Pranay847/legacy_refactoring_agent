@@ -434,11 +434,15 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
   const isGenerating = pipeline.actionState?.generate === "running";
   const isGeneratingAll = pipeline.actionState?.generateAll === "running";
 
+  const repoPath = session?.repoPath || "";
+
   const [activeServiceIndex, setActiveServiceIndex] = useState(0);
   const [activeFile, setActiveFile] = useState(null);
   const [displayCode, setDisplayCode] = useState("");
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [fileCache, setFileCache] = useState({});
+  const [originalCode, setOriginalCode] = useState("");
+  const [isLoadingOriginal, setIsLoadingOriginal] = useState(false);
 
   const activeService = generatedServices?.length > 0
     ? generatedServices[activeServiceIndex] || generatedServices[0]
@@ -446,7 +450,51 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
 
   const clusterNames = Object.keys(clusterSummary?.clusters || {});
 
+  // The cluster whose code is currently on display — used to fetch the matching
+  // original (pre-refactor) monolith source for the left pane.
+  const activeClusterName =
+    activeService?.cluster ||
+    clusterNames.find((name) => activeService?.dir?.startsWith(`${name}_`)) ||
+    selectedCluster ||
+    null;
+
   useEffect(() => { setActiveServiceIndex(0); }, [generatedServices?.length]);
+
+  // Keep the displayed service in sync with the cluster dropdown (batch mode).
+  useEffect(() => {
+    if (!selectedCluster || !(generatedServices?.length > 0)) return;
+    const idx = generatedServices.findIndex(
+      (svc) => svc.cluster === selectedCluster || svc.dir?.startsWith(`${selectedCluster}_`)
+    );
+    if (idx >= 0) setActiveServiceIndex(idx);
+  }, [selectedCluster, generatedServices]);
+
+  // Load the original monolith source for the active cluster so the left pane
+  // shows the real pre-refactor code (not a copy of the generated service).
+  useEffect(() => {
+    if (!activeClusterName) {
+      setOriginalCode("");
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingOriginal(true);
+    setOriginalCode("");
+    import("../api").then(({ fetchClusterSource }) => {
+      fetchClusterSource(activeClusterName, repoPath)
+        .then((data) => {
+          if (!cancelled) setOriginalCode(data.source || "");
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setOriginalCode("# Could not load the original monolith source for this cluster.");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingOriginal(false);
+        });
+    });
+    return () => { cancelled = true; };
+  }, [activeClusterName, repoPath]);
 
   useEffect(() => {
     const defaultFile = activeService?.activeFile || null;
@@ -489,7 +537,9 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
     return () => { cancelled = true; };
   }, [activeFile, activeService?.dir]);
 
-  const monolithCode = activeService?.code || "# Upload and analyze a monolith to see code here";
+  const monolithCode = isLoadingOriginal
+    ? "# Loading original source…"
+    : originalCode || "# Select a cluster to view its original monolith code.";
   const microserviceCode = displayCode || "# Generated microservice code will appear here";
 
   return (
@@ -527,13 +577,19 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
       <div className="grid flex-1 gap-3 lg:grid-cols-2">
         {/* Original Monolith Code */}
         <div className="flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--border-subtle)" }}>
-          <div className="flex items-center gap-2 px-4 py-2" style={{ background: "rgba(15, 19, 40, 0.8)", borderBottom: "1px solid var(--border-subtle)" }}>
+          <div className="flex items-center justify-between px-4 py-2" style={{ background: "rgba(15, 19, 40, 0.8)", borderBottom: "1px solid var(--border-subtle)" }}>
             <p className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>Original Monolith Code</p>
+            {isLoadingOriginal && (
+              <div className="flex items-center gap-1.5">
+                <LoaderCircle size={12} className="animate-spin" style={{ color: "var(--accent-cyan)" }} />
+                <span className="text-[10px]" style={{ color: "var(--accent-cyan)" }}>Loading</span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-1 px-3 py-1.5" style={{ background: "rgba(10, 14, 26, 0.5)", borderBottom: "1px solid var(--border-subtle)" }}>
             <span className="file-tab active">
               <FileCode2 size={12} />
-              {activeService?.activeFile?.replace(/\.py$/, "") || "monolith"}.py
+              {activeClusterName ? `${activeClusterName} (monolith)` : "monolith.py"}
             </span>
           </div>
           <pre className="code-editor flex-1 overflow-auto p-4" style={{ maxHeight: "300px", minHeight: "200px" }}>
@@ -838,6 +894,9 @@ function PipelineActions({
   const generateAllRunning = actionState.generateAll === "running";
   const resetRunning = actionState.reset === "running";
 
+  // "Scan" for a fresh project; "Re-scan" once the user has scanned it once.
+  const scanLabel = pipeline.hasScanned ? "Re-scan" : "Scan";
+
   return (
     <div className="glass-card flex flex-wrap items-center gap-3" style={{ padding: "14px 18px" }}>
       <span
@@ -849,7 +908,7 @@ function PipelineActions({
 
       <button className="btn-secondary" onClick={onScan} disabled={scanRunning}>
         {scanRunning ? <LoaderCircle size={14} className="animate-spin" /> : <ScanSearch size={14} />}
-        {scanRunning ? "Scanning…" : "Re-scan"}
+        {scanRunning ? "Scanning…" : scanLabel}
       </button>
 
       <button
@@ -892,6 +951,7 @@ function PipelineActions({
 
 export default function ResultsPanel({
   session,
+  activeView = "dashboard",
   onSelectCluster,
   onScan,
   onCalculateMicroservices,
@@ -929,6 +989,7 @@ export default function ResultsPanel({
   const pipeline = session.pipeline || {};
   const scanRunning = pipeline.actionState?.scan === "running";
   const clusterRunning = pipeline.actionState?.cluster === "running";
+  const view = activeView || "dashboard";
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -958,7 +1019,7 @@ export default function ResultsPanel({
         </div>
       )}
 
-      {/* Pipeline action toolbar */}
+      {/* Pipeline action toolbar (available on every view) */}
       <PipelineActions
         session={session}
         onScan={onScan}
@@ -967,21 +1028,40 @@ export default function ResultsPanel({
         onResetWorkspace={onResetWorkspace}
       />
 
-      {/* Row 1: Metric Cards */}
-      <MetricCardsRow session={session} />
+      {view === "dashboard" && (
+        <>
+          <MetricCardsRow session={session} />
+          <div className="grid gap-5 xl:grid-cols-[1fr_1.2fr]">
+            <ArchitectureGraph session={session} onSelectCluster={onSelectCluster} />
+            <SurgeryRoom session={session} onSelectCluster={onSelectCluster} onGenerateMicroservice={onGenerateMicroservice} />
+          </div>
+          <div className="grid gap-5 lg:grid-cols-3">
+            <ClustersOverview session={session} onSelectCluster={onSelectCluster} onGenerateForCluster={onGenerateForCluster} />
+            <RecentActivity session={session} />
+            <ValidationResults session={session} />
+          </div>
+        </>
+      )}
 
-      {/* Row 2: Architecture Graph + Surgery Room */}
-      <div className="grid gap-5 xl:grid-cols-[1fr_1.2fr]">
-        <ArchitectureGraph id="section-graph" session={session} onSelectCluster={onSelectCluster} />
-        <SurgeryRoom id="section-microservices" session={session} onSelectCluster={onSelectCluster} onGenerateMicroservice={onGenerateMicroservice} />
-      </div>
+      {view === "graph" && (
+        <ArchitectureGraph session={session} onSelectCluster={onSelectCluster} />
+      )}
 
-      {/* Row 3: Clusters Overview + Recent Activity + Validation */}
-      <div className="grid gap-5 lg:grid-cols-3">
-        <ClustersOverview id="section-clusters" session={session} onSelectCluster={onSelectCluster} onGenerateForCluster={onGenerateForCluster} />
-        <RecentActivity id="section-history" session={session} />
-        <ValidationResults id="section-validation" session={session} />
-      </div>
+      {view === "clusters" && (
+        <ClustersOverview session={session} onSelectCluster={onSelectCluster} onGenerateForCluster={onGenerateForCluster} />
+      )}
+
+      {view === "microservices" && (
+        <SurgeryRoom session={session} onSelectCluster={onSelectCluster} onGenerateMicroservice={onGenerateMicroservice} />
+      )}
+
+      {view === "validation" && (
+        <ValidationResults session={session} />
+      )}
+
+      {view === "history" && (
+        <RecentActivity session={session} />
+      )}
     </div>
   );
 }

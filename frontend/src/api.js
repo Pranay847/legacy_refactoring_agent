@@ -139,6 +139,16 @@ export async function fetchJob(jobId) {
   return parseJsonResponse(response, "Failed to fetch job status");
 }
 
+export async function fetchClusterSource(clusterName, repoPath) {
+  const query = repoPath ? `?repo_path=${encodeURIComponent(repoPath)}` : "";
+  const response = await fetch(
+    `${API_BASE}/clusters/${encodeURIComponent(clusterName)}/source${query}`,
+    { headers: await authHeaders() }
+  );
+
+  return parseJsonResponse(response, "Failed to load original source");
+}
+
 export async function fetchServiceFile(serviceName, fileName) {
   const response = await fetch(
     `${API_BASE}/services/${encodeURIComponent(serviceName)}/${encodeURIComponent(fileName)}`,

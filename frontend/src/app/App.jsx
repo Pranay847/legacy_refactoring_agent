@@ -103,6 +103,9 @@ function createInitialPipeline() {
     graph: null,
     selectedCluster: null,
     generatedService: null,
+    // Tracks whether the user has run the Scan action on this project, so the
+    // button can read "Scan" for a fresh project and "Re-scan" afterwards.
+    hasScanned: false,
     actionState: {
       scan: "idle",
       cluster: "idle",
@@ -115,13 +118,14 @@ function createInitialPipeline() {
   };
 }
 
-// Maps sidebar nav items to the dashboard section they should reveal.
-const SECTION_BY_VIEW = {
-  graph: "section-graph",
-  clusters: "section-clusters",
-  microservices: "section-microservices",
-  validation: "section-validation",
-  history: "section-history",
+// Title + subtitle shown in the header for each sidebar view.
+const VIEW_META = {
+  dashboard: { title: "Dashboard", subtitle: "Overview of your monolith analysis" },
+  graph: { title: "Graph View", subtitle: "Function dependencies & service architecture" },
+  clusters: { title: "Clusters", subtitle: "Detected microservice boundaries" },
+  microservices: { title: "Microservices", subtitle: "Original monolith vs. generated services" },
+  validation: { title: "Validation", subtitle: "Behavioral test results" },
+  history: { title: "History", subtitle: "Recent pipeline activity" },
 };
 
 export default function App() {
@@ -338,6 +342,7 @@ export default function App() {
 
       updatePipeline(session.id, (pipeline) => ({
         ...createInitialPipeline(),
+        hasScanned: true,
         scanSummary: {
           functions: data.functions ?? 0,
           dependencies: data.edges ?? 0,
@@ -567,7 +572,12 @@ export default function App() {
           }
         }
 
+        // Service dirs are named `${clusterName}_${serviceName}`; recover the
+        // originating cluster so the UI can fetch its original monolith source.
+        const cluster = clusterNames.find((name) => svc.name.startsWith(`${name}_`)) || null;
+
         allServices.push({
+          cluster,
           serviceName: svc.name,
           dir: svc.name,
           files: svc.files,
@@ -618,23 +628,12 @@ export default function App() {
     }
   };
 
-  // Sidebar navigation: highlight the chosen view and smooth-scroll the
-  // dashboard to the matching section (everything lives on one page).
+  // Sidebar navigation: switch to the chosen view as its own page and reset
+  // the scroll position to the top.
   const handleNavigate = (viewId) => {
     setActiveView(viewId);
-
-    if (viewId === "dashboard") {
-      dashboardRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
-
-    const sectionId = SECTION_BY_VIEW[viewId];
-    if (!sectionId) return;
-
     requestAnimationFrame(() => {
-      document
-        .getElementById(sectionId)
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      dashboardRef.current?.scrollTo({ top: 0, behavior: "auto" });
     });
   };
 
@@ -743,6 +742,8 @@ export default function App() {
         <SessionHeader
           session={store.activeSession}
           onUploadClick={handleOpenUploadPicker}
+          title={(VIEW_META[activeView] || VIEW_META.dashboard).title}
+          subtitle={(VIEW_META[activeView] || VIEW_META.dashboard).subtitle}
         />
 
         {/* Dashboard Content */}
@@ -753,6 +754,7 @@ export default function App() {
         >
           <ResultsPanel
             session={store.activeSession}
+            activeView={activeView}
             onSelectCluster={handleSelectCluster}
             onScan={handleScan}
             onCalculateMicroservices={handleCalculateMicroservices}
