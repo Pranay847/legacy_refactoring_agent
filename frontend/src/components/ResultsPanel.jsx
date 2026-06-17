@@ -504,7 +504,7 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
     } else {
       setFileCache({});
     }
-  }, [activeService?.dir]);
+  }, [activeService?.dir, activeService?.generationRevision]);
 
   useEffect(() => {
     if (!activeFile || !activeService?.dir) {
@@ -736,7 +736,7 @@ function RecentActivity({ id, session }) {
 
       {recentMessages.length === 0 ? (
         <p className="py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
-          No activity yet. Upload a monolith to get started.
+          No activity yet. Upload a Project to get started.
         </p>
       ) : (
         <div className="space-y-3" style={{ maxHeight: "240px", overflow: "auto" }}>
@@ -915,7 +915,7 @@ function PipelineActions({
         className="btn-secondary"
         onClick={onCalculateMicroservices}
         disabled={clusterRunning || !hasScan}
-        title={!hasScan ? "Upload or scan a monolith first" : undefined}
+        title={!hasScan ? "Upload or scan a codebase first" : undefined}
       >
         {clusterRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Workflow size={14} />}
         {clusterRunning ? "Calculating…" : "Calculate Microservices"}

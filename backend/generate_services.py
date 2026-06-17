@@ -44,7 +44,7 @@ def dedup_service_names(clusters: dict) -> dict:
         if name in seen:
             seen[name] += 1
             new_name = f"{name}_{seen[name]}"
-            print(f"  [WARN] Service name collision: '{name}' already used — "
+            print(f"  [WARN] Service name collision: '{name}' already used - "
                   f"renaming {cluster_key} to '{new_name}'")
             cluster["suggested_service"] = new_name
         else:
@@ -285,7 +285,7 @@ def main():
         service_name = cluster_data["suggested_service"]
         size         = cluster_data["size"]
 
-        print(f"\n[{cluster_name}] '{service_name}' — {size} functions")
+        print(f"\n[{cluster_name}] '{service_name}' - {size} functions")
 
         sources = collect_source_for_cluster(cluster_data, args.repo)
         if not sources:
@@ -294,7 +294,7 @@ def main():
 
         print(f"  Extracted {len(sources)} function(s):")
         for name in sources:
-            print(f"    • {name}")
+            print(f"    - {name}")
 
         prompt = build_prompt(cluster_name, service_name, sources)
 

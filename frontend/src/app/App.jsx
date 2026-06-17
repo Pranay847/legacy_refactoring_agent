@@ -320,6 +320,47 @@ export default function App() {
     }));
   };
 
+  const applyGeneratedService = (sessionId, generated, fileContent, preferredFile) => {
+    const revision = Date.now();
+    const serviceEntry = {
+      cluster: generated.cluster,
+      serviceName: generated.service_name,
+      dir: generated.dir,
+      files: generated.files,
+      activeFile: preferredFile ?? null,
+      code: fileContent.content ?? "",
+      generationRevision: revision,
+    };
+
+    updatePipeline(sessionId, (pipeline) => {
+      let generatedServices = pipeline.generatedServices;
+      if (generatedServices?.length) {
+        const idx = generatedServices.findIndex(
+          (svc) =>
+            svc.cluster === generated.cluster ||
+            svc.dir === generated.dir ||
+            svc.dir?.startsWith(`${generated.cluster}_`)
+        );
+        if (idx >= 0) {
+          generatedServices = generatedServices.map((svc, i) =>
+            i === idx ? { ...svc, ...serviceEntry } : svc
+          );
+        }
+      }
+
+      return {
+        ...pipeline,
+        generatedService: serviceEntry,
+        generatedServices,
+        error: null,
+        actionState: {
+          ...pipeline.actionState,
+          generate: "success",
+        },
+      };
+    });
+  };
+
   const handleScan = async () => {
     const session = store.activeSession;
     if (!session) return;
@@ -447,33 +488,23 @@ export default function App() {
     store.setSessionStatus(session.id, "generating");
 
     try {
-      const generated = await generateMicroservice(selectedCluster, repoPath);
+      const generated = await generateMicroservice(selectedCluster, repoPath, { force: true });
       const serviceName = generated.dir;
       const preferredFile = generated.files.find((fileName) => fileName === "main.py") || generated.files[0];
       const fileContent = preferredFile
         ? await fetchServiceFile(serviceName, preferredFile)
         : { content: "" };
 
-      updatePipeline(session.id, (pipeline) => ({
-        ...pipeline,
-        generatedService: {
-          cluster: generated.cluster,
-          serviceName: generated.service_name,
-          dir: generated.dir,
-          files: generated.files,
-          activeFile: preferredFile ?? null,
-          code: fileContent.content ?? "",
-        },
-        error: null,
-        actionState: {
-          ...pipeline.actionState,
-          generate: "success",
-        },
-      }));
+      applyGeneratedService(session.id, generated, fileContent, preferredFile);
+
+      const action =
+        generated.generation_status === "skipped"
+          ? `Reused existing ${generated.service_name} (already generated).`
+          : `Regenerated ${generated.service_name} from ${generated.cluster}.`;
 
       store.addMessage(session.id, {
         role: "assistant",
-        content: `Generated ${generated.service_name} from ${generated.cluster}.`,
+        content: action,
       });
       store.setSessionStatus(session.id, "generation complete");
     } catch (error) {
@@ -583,6 +614,7 @@ export default function App() {
           files: svc.files,
           activeFile: preferredFile ?? null,
           code,
+          generationRevision: Date.now(),
         });
       }
 
@@ -658,22 +690,7 @@ export default function App() {
         ? await fetchServiceFile(serviceName, preferredFile)
         : { content: "" };
 
-      updatePipeline(session.id, (pipeline) => ({
-        ...pipeline,
-        generatedService: {
-          cluster: generated.cluster,
-          serviceName: generated.service_name,
-          dir: generated.dir,
-          files: generated.files,
-          activeFile: preferredFile ?? null,
-          code: fileContent.content ?? "",
-        },
-        error: null,
-        actionState: {
-          ...pipeline.actionState,
-          generate: "success",
-        },
-      }));
+      applyGeneratedService(session.id, generated, fileContent, preferredFile);
 
       store.addMessage(session.id, {
         role: "assistant",

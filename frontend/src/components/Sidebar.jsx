@@ -12,7 +12,7 @@ import { fetchStatus } from "../api";
 
 const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "upload", label: "Upload Monolith", icon: UploadCloud },
+  { id: "upload", label: "Upload Project", icon: UploadCloud },
   { id: "graph", label: "Graph View", icon: Network },
   { id: "clusters", label: "Clusters", icon: Boxes },
   { id: "microservices", label: "Microservices", icon: Cpu },
@@ -42,17 +42,20 @@ export default function Sidebar({
 }) {
   const [backendStatus, setBackendStatus] = useState({
     neo4j: "checking",
-    openai: "checking",
+    anthropic: "checking",
   });
 
-  // Check backend connectivity on mount (shared client adds the auth token).
+  // Check backend connectivity and integration readiness on mount.
   useEffect(() => {
     fetchStatus()
-      .then(() => {
-        setBackendStatus({ neo4j: "connected", openai: "connected" });
+      .then((data) => {
+        setBackendStatus({
+          neo4j: data.neo4j_connected ? "connected" : "disconnected",
+          anthropic: data.anthropic_configured ? "connected" : "disconnected",
+        });
       })
       .catch(() => {
-        setBackendStatus({ neo4j: "disconnected", openai: "disconnected" });
+        setBackendStatus({ neo4j: "disconnected", anthropic: "disconnected" });
       });
   }, []);
 
@@ -164,11 +167,11 @@ export default function Sidebar({
                     : "var(--accent-rose)",
             }}
           >
-            {backendStatus.neo4j === "connected"
+            {backendStatus.neo4j === "connected" && backendStatus.anthropic === "connected"
               ? "All systems operational"
-              : backendStatus.neo4j === "checking"
+              : backendStatus.neo4j === "checking" || backendStatus.anthropic === "checking"
                 ? "Checking connections..."
-                : "Backend offline"}
+                : "Some services unavailable"}
           </p>
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
@@ -188,17 +191,17 @@ export default function Sidebar({
             </div>
             <div className="flex items-center gap-2">
               <span
-                className={`status-dot ${backendStatus.openai === "connected" ? "connected" : "disconnected"}`}
+                className={`status-dot ${backendStatus.anthropic === "connected" ? "connected" : "disconnected"}`}
               />
               <span className="text-[11px]" style={{ color: "#94a3b8" }}>
-                OpenAI
+                Anthropic
               </span>
               <span className="ml-auto text-[10px]" style={{ color: "#64748b" }}>
-                {backendStatus.openai === "connected"
-                  ? "Connected"
-                  : backendStatus.openai === "checking"
+                {backendStatus.anthropic === "connected"
+                  ? "Configured"
+                  : backendStatus.anthropic === "checking"
                     ? "Checking"
-                    : "Offline"}
+                    : "Not configured"}
               </span>
             </div>
           </div>

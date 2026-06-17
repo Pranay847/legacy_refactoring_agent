@@ -93,13 +93,14 @@ export async function fetchGraph() {
   return parseJsonResponse(response, "Failed to load graph");
 }
 
-export async function generateMicroservice(clusterName, repoPath) {
+export async function generateMicroservice(clusterName, repoPath, { force = false } = {}) {
   const response = await fetch(`${API_BASE}/generate`, {
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       cluster_name: clusterName,
       repo_path: repoPath,
+      force,
     }),
   });
 

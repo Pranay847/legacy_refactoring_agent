@@ -16,6 +16,15 @@ import sys
 import traceback
 from pathlib import Path
 from typing import List
+
+# Windows consoles often default to a legacy code page; reconfigure so pipeline
+# log lines with unicode (bullets, dashes) don't raise OSError [Errno 22].
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
  
 import importlib
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -195,6 +204,7 @@ class ScanRequest(BaseModel):
 class GenerateRequest(BaseModel):
     cluster_name: str
     repo_path: str
+    force: bool = False
  
  
 class GenerateAllRequest(BaseModel):
@@ -220,6 +230,22 @@ class CheckoutRequest(BaseModel):
 @app.get("/api/status")
 def get_status():
     """Return the current pipeline state plus which integrations are enabled."""
+    neo4j_connected = False
+    if settings.neo4j_password:
+        try:
+            from neo4j import GraphDatabase
+
+            driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_user, settings.neo4j_password),
+            )
+            with driver.session() as session:
+                session.run("RETURN 1").consume()
+            driver.close()
+            neo4j_connected = True
+        except Exception:
+            neo4j_connected = False
+
     return {
         "step1_done": pipeline_state["step1_done"],
         "step2_done": pipeline_state["step2_done"],
@@ -228,12 +254,15 @@ def get_status():
         "repo_path":  pipeline_state["repo_path"],
         "has_clusters": pipeline_state["clusters"] is not None,
         "error": pipeline_state["error"],
+        "anthropic_configured": bool(settings.anthropic_api_key),
+        "neo4j_connected": neo4j_connected,
         # Feature flags only (no secret values) so the frontend can adapt its UI.
         "integrations": {
             "auth": settings.auth_enabled,
             "billing": settings.billing_enabled,
             "supabase": settings.supabase_enabled,
             "async_jobs": settings.redis_enabled,
+            "anthropic": bool(settings.anthropic_api_key),
         },
     }
  
@@ -516,11 +545,18 @@ def generate_service(req: GenerateRequest):
             detail=f"Cluster '{req.cluster_name}' not found. "
                    f"Available: {list(clusters.keys())}"
         )
+
+    if not settings.anthropic_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is not configured. Add it to your .env file.",
+        )
  
     try:
         pipeline_state["error"] = None
+        clusters = dedup_service_names(clusters)
         filtered = {req.cluster_name: clusters[req.cluster_name]}
-        results = step4_generate(req.repo_path, filtered, force=False)
+        results = step4_generate(req.repo_path, filtered, force=req.force)
         result = results[0] if results else {}
  
         return {
