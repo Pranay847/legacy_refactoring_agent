@@ -35,12 +35,24 @@ def clear_graph(session):
     session.run("MATCH (n) DETACH DELETE n")
 
 
+def ensure_function_index(session):
+    """
+    Index Function.name so the per-row MERGE in load_edges can do an
+    index lookup instead of a full label scan. Without this, loading
+    scales O(n^2) with the number of functions instead of ~O(n).
+    """
+    session.run(
+        "CREATE INDEX function_name_idx IF NOT EXISTS FOR (f:Function) ON (f.name)"
+    )
+
+
 def load_edges(session, csv_path: str):
     """
     Read edges.csv and create (:Function)-[:CALLS]->(:Function) in Neo4j.
     Uses MERGE so re-running is safe (idempotent).
     """
     print(f"Loading edges from {csv_path}...")
+    ensure_function_index(session)
 
     with open(csv_path, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))

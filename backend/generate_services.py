@@ -10,7 +10,13 @@ import anthropic
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or os.getenv("API_KEY")
 MODEL             = "claude-sonnet-4-5"
+FAST_MODEL        = "claude-haiku-4-5"
+SMALL_CLUSTER_THRESHOLD = 6  # clusters at or below this many functions use FAST_MODEL
 MAX_TOKENS        = 4096
+
+
+def model_for_cluster_size(size: int) -> str:
+    return FAST_MODEL if size <= SMALL_CLUSTER_THRESHOLD else MODEL
 
 #Load clusters
 def load_clusters(clusters_path: str) -> dict:
@@ -179,7 +185,7 @@ def build_prompt(cluster_name: str, service_name: str, sources: dict[str, str]) 
     """).strip()
 
 #Call Claude API
-def call_claude(prompt: str) -> str:
+def call_claude(prompt: str, model: str = MODEL) -> str:
     if not ANTHROPIC_API_KEY:
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set. Add it to your .env file and restart the terminal."
@@ -187,9 +193,9 @@ def call_claude(prompt: str) -> str:
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    print("  Sending to Claude API...", end="", flush=True)
+    print(f"  Sending to Claude API ({model})...", end="", flush=True)
     message = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
     )

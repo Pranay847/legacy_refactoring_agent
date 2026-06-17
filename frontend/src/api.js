@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
 
 async function parseJsonResponse(response, fallbackMessage) {
   const data = await response.json().catch(() => null);
@@ -82,6 +82,21 @@ export async function generateMicroservice(clusterName, repoPath) {
   });
 
   return parseJsonResponse(response, "Failed to generate microservice");
+}
+
+export async function generateAllMicroservices(clusterNames, repoPath) {
+  const response = await fetch(`${API_BASE}/generate-all`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      cluster_names: clusterNames,
+      repo_path: repoPath,
+    }),
+  });
+
+  return parseJsonResponse(response, "Failed to generate microservices");
 }
 
 export async function fetchServiceFile(serviceName, fileName) {

@@ -8,13 +8,13 @@ function MarkdownMessage({ content }) {
     <ReactMarkdown
       components={{
         h1: ({ children }) => (
-          <h1 className="mb-2 mt-3 text-base font-bold text-zinc-900 dark:text-zinc-100">{children}</h1>
+          <h1 className="mb-2 mt-3 text-base font-bold" style={{ color: "var(--text-primary)" }}>{children}</h1>
         ),
         h2: ({ children }) => (
-          <h2 className="mb-2 mt-3 text-sm font-bold text-zinc-900 dark:text-zinc-100">{children}</h2>
+          <h2 className="mb-2 mt-3 text-sm font-bold" style={{ color: "var(--text-primary)" }}>{children}</h2>
         ),
         h3: ({ children }) => (
-          <h3 className="mb-1 mt-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">{children}</h3>
+          <h3 className="mb-1 mt-2 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{children}</h3>
         ),
         p: ({ children }) => (
           <p className="mb-2 last:mb-0">{children}</p>
@@ -29,48 +29,57 @@ function MarkdownMessage({ content }) {
           <li className="text-sm leading-6">{children}</li>
         ),
         strong: ({ children }) => (
-          <strong className="font-semibold text-zinc-900 dark:text-zinc-100">{children}</strong>
+          <strong className="font-semibold" style={{ color: "var(--text-primary)" }}>{children}</strong>
         ),
         code: ({ inline, className, children }) => {
           if (inline) {
             return (
-              <code className="rounded bg-zinc-200 px-1.5 py-0.5 text-xs font-mono text-emerald-700 dark:bg-zinc-700 dark:text-emerald-300">
+              <code
+                className="rounded px-1.5 py-0.5 text-xs font-mono"
+                style={{ background: "rgba(139, 92, 246, 0.12)", color: "#a78bfa" }}
+              >
                 {children}
               </code>
             );
           }
           return (
-            <pre className="my-2 overflow-auto rounded-xl bg-zinc-900 p-3 dark:bg-black/40">
-              <code className="text-xs font-mono leading-5 text-zinc-200">
+            <pre className="code-editor my-2 overflow-auto p-3">
+              <code className="text-xs font-mono leading-5" style={{ color: "var(--text-secondary)" }}>
                 {children}
               </code>
             </pre>
           );
         },
         a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline hover:text-blue-400">
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "var(--accent-violet)" }}
+            className="underline hover:opacity-80"
+          >
             {children}
           </a>
         ),
         table: ({ children }) => (
           <div className="my-2 overflow-auto">
-            <table className="w-full border-collapse text-xs">{children}</table>
+            <table className="dashboard-table">{children}</table>
           </div>
         ),
         thead: ({ children }) => (
-          <thead className="border-b border-zinc-300 dark:border-zinc-600">{children}</thead>
+          <thead style={{ borderBottom: "1px solid var(--border-subtle)" }}>{children}</thead>
         ),
         th: ({ children }) => (
-          <th className="px-2 py-1.5 text-left font-semibold text-zinc-900 dark:text-zinc-100">{children}</th>
+          <th className="px-2 py-1.5 text-left font-semibold" style={{ color: "var(--text-primary)" }}>{children}</th>
         ),
         td: ({ children }) => (
-          <td className="border-t border-zinc-200 px-2 py-1.5 dark:border-zinc-700">{children}</td>
+          <td className="px-2 py-1.5" style={{ borderTop: "1px solid var(--border-subtle)" }}>{children}</td>
         ),
         hr: () => (
-          <hr className="my-3 border-zinc-300 dark:border-zinc-600" />
+          <hr style={{ borderColor: "var(--border-subtle)" }} className="my-3" />
         ),
         blockquote: ({ children }) => (
-          <blockquote className="my-2 border-l-2 border-emerald-400 pl-3 text-zinc-600 dark:text-zinc-400">
+          <blockquote className="my-2 border-l-2 pl-3" style={{ borderColor: "var(--accent-violet)", color: "var(--text-muted)" }}>
             {children}
           </blockquote>
         ),
@@ -117,23 +126,41 @@ export default function ChatWindow({ session, addMessage, setSessionStatus }) {
 
   if (!session) {
     return (
-      <div className="flex h-full items-center justify-center rounded-2xl border border-zinc-200 bg-white dark:bg-zinc-900 p-6 shadow-sm">
-        <p className="text-sm text-zinc-500">Create a session to start analyzing.</p>
+      <div
+        className="glass-card flex h-full items-center justify-center"
+        style={{ padding: "24px" }}
+      >
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+          Create a session to start analyzing.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col rounded-2xl border border-zinc-200 bg-white dark:bg-zinc-900 shadow-sm">
+    <div
+      className="glass-card flex h-full flex-col"
+      style={{ overflow: "hidden" }}
+    >
       <div className="flex-1 space-y-4 overflow-y-auto p-5">
         {session.messages.map((message) => (
           <div
             key={message.id}
-            className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 ${
-              message.role === "user"
-                ? "ml-auto bg-blue-600 text-white"
-                : "bg-zinc-100 dark:bg-zinc-600 text-zinc-800 dark:text-zinc-200"
+            className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 animate-fade-in ${
+              message.role === "user" ? "ml-auto" : ""
             }`}
+            style={
+              message.role === "user"
+                ? {
+                    background: "linear-gradient(135deg, #8b5cf6, #6366f1)",
+                    color: "#fff",
+                  }
+                : {
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border-subtle)",
+                    color: "var(--text-secondary)",
+                  }
+            }
           >
             {message.role === "assistant" ? (
               <MarkdownMessage content={message.content} />
@@ -144,19 +171,34 @@ export default function ChatWindow({ session, addMessage, setSessionStatus }) {
         ))}
       </div>
 
-      <div className="border-t border-zinc-200 p-4">
+      <div
+        className="p-4"
+        style={{ borderTop: "1px solid var(--border-subtle)" }}
+      >
         <div className="flex items-end gap-3">
           <textarea
             rows={3}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
             placeholder="Ask about the uploaded codebase, architecture, dependencies, or suggested service boundaries..."
-            className="min-h-[84px] flex-1 resize-none rounded-2xl border border-zinc-300 px-4 py-3 text-sm text-zinc-900 dark:text-zinc-300 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            className="min-h-[84px] flex-1 resize-none rounded-xl px-4 py-3 text-sm outline-none transition"
+            style={{
+              background: "var(--bg-card)",
+              border: "1px solid var(--border-default)",
+              color: "var(--text-primary)",
+            }}
           />
           <button
             onClick={handleSend}
             disabled={sending}
-            className="inline-flex h-12 items-center gap-2 rounded-2xl bg-zinc-900 px-5 font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className="btn-primary"
+            style={{ height: "48px" }}
           >
             <SendHorizonal size={16} />
             Send

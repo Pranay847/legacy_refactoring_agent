@@ -1,0 +1,12 @@
+{
+  "artifact_signature": {
+    "edges.csv": {
+      "mtime_ns": 1781653600070098300,
+      "size": 83257
+    },
+    "nodes.csv": {
+      "mtime_ns": 1781653600073325400,
+      "size": 13359
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from graph_loader import (
 from generate_services import (
     load_clusters, collect_source_for_cluster,
     build_prompt, call_claude, parse_generated_files, save_service,
+    model_for_cluster_size,
 )
 from validators import validate_clusters
 
@@ -87,52 +89,111 @@ def step3_cluster():
     return clusters
 
 
-def step4_generate(repo_path: str, clusters: dict, force: bool = False):
+def _generate_one_cluster(repo_path: str, cluster_name: str, cluster_data: dict, force: bool = False) -> dict:
+    service_name = cluster_data["suggested_service"]
+    dir_name     = f"{cluster_name}_{service_name}"
+    service_dir  = SERVICES_DIR / dir_name
+    checkpoint   = service_dir / "_checkpoint.json"
+
+    print(f"\n  [{cluster_name}] {service_name} - {cluster_data['size']} functions")
+
+    if not force and checkpoint.exists():
+        print("    [OK] Already generated - skipping (use --force-regen to override)")
+        files = [
+            f.name for f in service_dir.iterdir()
+            if f.is_file() and f.name != "_checkpoint.json"
+        ]
+        return {
+            "status": "skipped",
+            "cluster": cluster_name,
+            "service_name": service_name,
+            "dir": dir_name,
+            "files": files,
+        }
+
+    sources = collect_source_for_cluster(cluster_data, repo_path)
+    if not sources:
+        print("    No source extracted - skipping.")
+        return {
+            "status": "skipped",
+            "cluster": cluster_name,
+            "service_name": service_name,
+            "dir": dir_name,
+            "files": [],
+            "error": "No source extracted.",
+        }
+
+    model    = model_for_cluster_size(cluster_data["size"])
+    prompt   = build_prompt(cluster_name, service_name, sources)
+    response = call_claude(prompt, model=model)
+    files    = parse_generated_files(response)
+
+    if not files:
+        print("    Could not parse response - skipping.")
+        return {
+            "status": "error",
+            "cluster": cluster_name,
+            "service_name": service_name,
+            "dir": dir_name,
+            "files": [],
+            "error": "Could not parse model response.",
+        }
+
+    save_service(dir_name, files, str(SERVICES_DIR))
+    checkpoint_data = {
+        "cluster_name": cluster_name,
+        "service_name": service_name,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "files": list(files.keys()),
+    }
+    checkpoint.write_text(
+        json.dumps(checkpoint_data, indent=2), encoding="utf-8"
+    )
+    return {
+        "status": "generated",
+        "cluster": cluster_name,
+        "service_name": service_name,
+        "dir": dir_name,
+        "files": list(files.keys()),
+    }
+
+
+def step4_generate(repo_path: str, clusters: dict, force: bool = False, max_workers: int = 1) -> list[dict]:
     banner(4, "Generating microservices via Claude API")
-    generated = 0
-    skipped   = 0
+    workers = max(1, min(max_workers, len(clusters) or 1))
+    results: list[dict] = []
 
-    for cluster_name, cluster_data in clusters.items():
-        service_name = cluster_data["suggested_service"]
-        dir_name     = f"{cluster_name}_{service_name}"
-        service_dir  = SERVICES_DIR / dir_name
-        checkpoint   = service_dir / "_checkpoint.json"
-
-        print(f"\n  [{cluster_name}] {service_name} - {cluster_data['size']} functions")
-
-        # --- Per-service checkpoint: skip if already generated ---
-        if not force and checkpoint.exists():
-            print("    [OK] Already generated - skipping (use --force-regen to override)")
-            skipped += 1
-            continue
-
-        sources = collect_source_for_cluster(cluster_data, repo_path)
-        if not sources:
-            print("    No source extracted - skipping.")
-            continue
-
-        prompt   = build_prompt(cluster_name, service_name, sources)
-        response = call_claude(prompt)
-        files    = parse_generated_files(response)
-
-        if files:
-            save_service(dir_name, files, str(SERVICES_DIR))
-            # Write checkpoint marker
-            checkpoint_data = {
-                "cluster_name": cluster_name,
-                "service_name": service_name,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "model": "claude-sonnet-4-5",
-                "files": list(files.keys()),
+    if workers == 1:
+        for cluster_name, cluster_data in clusters.items():
+            results.append(_generate_one_cluster(repo_path, cluster_name, cluster_data, force))
+    else:
+        print(f"  Running up to {workers} generations in parallel.")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_generate_one_cluster, repo_path, cluster_name, cluster_data, force): cluster_name
+                for cluster_name, cluster_data in clusters.items()
             }
-            checkpoint.write_text(
-                json.dumps(checkpoint_data, indent=2), encoding="utf-8"
-            )
-            generated += 1
-        else:
-            print("    Could not parse response - skipping.")
+            for future in as_completed(futures):
+                cluster_name = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    cluster_data = clusters[cluster_name]
+                    results.append({
+                        "status": "error",
+                        "cluster": cluster_name,
+                        "service_name": cluster_data["suggested_service"],
+                        "dir": f"{cluster_name}_{cluster_data['suggested_service']}",
+                        "files": [],
+                        "error": str(exc),
+                    })
 
-    print(f"\n  Summary: {generated} generated, {skipped} skipped (checkpointed)")
+    generated = sum(1 for result in results if result["status"] == "generated")
+    skipped = sum(1 for result in results if result["status"] == "skipped")
+    failed = sum(1 for result in results if result["status"] == "error")
+    print(f"\n  Summary: {generated} generated, {skipped} skipped, {failed} failed (checkpointed)")
+    return results
 
 
 def step5_summary():

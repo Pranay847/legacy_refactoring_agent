@@ -93,22 +93,36 @@ export default function NewSessionModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-      <div className="w-full max-w-lg rounded-[28px] border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/40">
-        <div className="flex items-start justify-between gap-4 border-b border-zinc-800 px-6 py-5">
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(10, 14, 26, 0.8)", backdropFilter: "blur(8px)" }}>
+      <div
+        className="glass-card w-full max-w-lg animate-fade-in"
+        style={{ border: "1px solid var(--border-default)" }}
+      >
+        <div
+          className="flex items-start justify-between gap-4 px-6 py-5"
+          style={{ borderBottom: "1px solid var(--border-subtle)" }}
+        >
           <div className="flex items-start gap-4">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-500/12 text-emerald-300">
+            <div
+              className="flex h-11 w-11 items-center justify-center rounded-xl"
+              style={{ background: "rgba(139, 92, 246, 0.12)", color: "#a78bfa" }}
+            >
               <Icon size={20} />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">{config.title}</h2>
-              <p className="mt-1 text-sm text-zinc-400">{config.description}</p>
+              <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>
+                {config.title}
+              </h2>
+              <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+                {config.description}
+              </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="rounded-full p-2 text-zinc-500 transition hover:bg-zinc-900 hover:text-zinc-200"
+            className="rounded-full p-2 transition hover:bg-white/5"
+            style={{ color: "var(--text-muted)" }}
             aria-label="Close modal"
           >
             <X size={18} />
@@ -118,7 +132,7 @@ export default function NewSessionModal({
         <form onSubmit={handleSubmit} className="space-y-5 px-6 py-6">
           {mode === "github" ? (
             <label className="block">
-              <span className="mb-2 flex items-center gap-2 text-sm font-medium text-zinc-200">
+              <span className="mb-2 flex items-center gap-2 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>
                 <FolderGit2 size={16} />
                 GitHub repo URL
               </span>
@@ -128,13 +142,18 @@ export default function NewSessionModal({
                 value={repoUrl}
                 onChange={(event) => setRepoUrl(event.target.value)}
                 placeholder="https://github.com/org/repo"
-                className="w-full rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                className="w-full rounded-xl px-4 py-3 text-sm outline-none transition"
+                style={{
+                  background: "var(--bg-card)",
+                  border: "1px solid var(--border-default)",
+                  color: "var(--text-primary)",
+                }}
               />
             </label>
           ) : null}
 
           <label className="block">
-            <span className="mb-2 flex items-center gap-2 text-sm font-medium text-zinc-200">
+            <span className="mb-2 flex items-center gap-2 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>
               <PencilLine size={16} />
               Project name
             </span>
@@ -147,9 +166,14 @@ export default function NewSessionModal({
                 setLastDerivedName("");
               }}
               placeholder="Example: Billing Service Rewrite"
-              className="w-full rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+              className="w-full rounded-xl px-4 py-3 text-sm outline-none transition"
+              style={{
+                background: "var(--bg-card)",
+                border: "1px solid var(--border-default)",
+                color: "var(--text-primary)",
+              }}
             />
-            <p className="mt-2 text-xs text-zinc-500">
+            <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
               This is added to the project header and can be renamed later.
             </p>
           </label>
@@ -158,14 +182,18 @@ export default function NewSessionModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-2xl border border-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-900"
+              className="rounded-xl px-4 py-2.5 text-sm font-medium transition hover:bg-white/5"
+              style={{
+                border: "1px solid var(--border-default)",
+                color: "var(--text-secondary)",
+              }}
             >
               Cancel
             </button>
 
             <button
               type="submit"
-              className="rounded-2xl bg-emerald-500 px-4 py-2.5 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400"
+              className="btn-primary"
             >
               {config.submitLabel}
             </button>

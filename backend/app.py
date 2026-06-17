@@ -5,7 +5,7 @@ Wraps the pipeline_runner steps as HTTP endpoints for the React frontend.
  
 Start with:
     cd backend
-    uvicorn api:app --reload --port 8000
+    uvicorn app:app --reload --port 8000
 """
  
 import csv
@@ -65,7 +65,8 @@ app.add_middleware(
         "http://localhost:3000",   # CRA fallback
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
-    ],
+        "https://your-app.vercel.app",  # Add your actual Vercel URL here
+    ] + ([os.environ.get("FRONTEND_URL")] if os.environ.get("FRONTEND_URL") else []),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,6 +78,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
  
 STALE_ARTIFACTS = ["edges.csv", "nodes.csv", "clusters.json", "graph.json"]
+MAX_UPLOAD_PART_SIZE = 50 * 1024 * 1024
 CLUSTER_META = IMPORT_DIR / "clusters.meta.json"
 
 
@@ -242,8 +244,13 @@ async def ingest_files(request: Request):
     try:
         pipeline_state["error"] = None
  
-        # Parse multipart form with raised limits (Starlette default is 1000)
-        form = await request.form(max_files=10000, max_fields=1000)
+        # Parse multipart form with raised limits. Starlette's default
+        # max_part_size is 1 MB, which rejects common source repo files.
+        form = await request.form(
+            max_files=10000,
+            max_fields=1000,
+            max_part_size=MAX_UPLOAD_PART_SIZE,
+        )
         session_id = form["session_id"]
         project_name = form.get("project_name", "") or ""
         files = form.getlist("files")
@@ -666,7 +673,7 @@ def get_service_file(name: str, file_name: str):
         raise HTTPException(status_code=404, detail=f"File '{file_name}' not in service '{name}'")
     return {"content": file_path.read_text(encoding="utf-8"), "name": file_name}
  
- 
+
 @app.get("/api/verification")
 def get_verification():
     """Return shadow tester parity results."""
