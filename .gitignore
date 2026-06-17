@@ -17,8 +17,16 @@ env/
 *.swp
 *.swo
 
+# Logs
+*.log
+
 # Project
 .env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 import/uploads/
 import/edges.csv
 import/nodes.csv

@@ -1,4 +1,6 @@
 import { UploadCloud } from "lucide-react";
+import { AUTH_ENABLED } from "../auth/AuthGate";
+import AccountControls from "./AccountControls";
 
 export default function SessionHeader({
   session,
@@ -64,6 +66,7 @@ export default function SessionHeader({
           <UploadCloud size={16} />
           Upload New Monolith
         </button>
+        {AUTH_ENABLED ? <AccountControls /> : null}
       </div>
     </header>
   );

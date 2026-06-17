@@ -9,6 +9,7 @@ Start with:
 """
  
 import csv
+import hashlib
 import json
 import os
 import sys
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import List
  
 import importlib
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
  
@@ -32,13 +33,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).parent))
  
-# Load .env before importing pipeline modules
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-if _env_path.exists():
-    for _line in _env_path.read_text().splitlines():
-        if "=" in _line and not _line.startswith("#"):
-            _k, _v = _line.split("=", 1)
-            os.environ.setdefault(_k.strip(), _v.strip())
+# Central configuration loads the repo-root .env into the environment on import
+# (this runs after the sys.path setup above so `config` resolves in all launch modes).
+from config import settings
  
 from pipeline_runner import (
     step1_scan, step2_load_graph, step3_cluster,
@@ -47,6 +44,21 @@ from pipeline_runner import (
 )
 from validators import validate_clusters
 from generate_services import dedup_service_names
+
+# Auth + billing + rate limiting (all gated: no-ops until their keys are configured).
+from auth import install_auth, get_principal, Principal
+from billing import (
+    PLANS,
+    meter,
+    create_checkout_session,
+    create_portal_session,
+    construct_event,
+    handle_event,
+)
+from ratelimit import rate_limit
+from cache import cache_get, cache_set
+from jobs import enqueue_generate_all, get_job
+import db
  
 # ---------------------------------------------------------------------------
 # App & CORS
@@ -56,20 +68,17 @@ app = FastAPI(
     version="1.0.0",
     description="API layer for the monolith to microservices pipeline",
 )
- 
+
+# Register auth BEFORE CORS so CORS stays the outermost middleware and 401
+# responses still carry CORS headers (otherwise the browser hides the error).
+install_auth(app)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",   # Vite dev server
-        "http://localhost:5174",   # Vite fallback port
-        "http://localhost:3000",   # CRA fallback
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "https://your-app.vercel.app",  # Add your actual Vercel URL here
-    ] + ([os.environ.get("FRONTEND_URL")] if os.environ.get("FRONTEND_URL") else []),
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
  
  
@@ -92,6 +101,18 @@ def _artifact_signature() -> dict:
                 "size": stat.st_size,
             }
     return signature
+
+
+def _sig_for(*paths) -> str:
+    """Stable cache fingerprint from file mtime/size (changes when inputs change)."""
+    parts = []
+    for p in paths:
+        if p.exists():
+            st = p.stat()
+            parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}")
+        else:
+            parts.append(f"{p.name}:missing")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
 
 
 def _load_cached_clusters() -> dict | None:
@@ -186,6 +207,10 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = ""
     context: str = ""
+
+
+class CheckoutRequest(BaseModel):
+    plan: str
  
  
 # ---------------------------------------------------------------------------
@@ -194,7 +219,7 @@ class ChatRequest(BaseModel):
  
 @app.get("/api/status")
 def get_status():
-    """Return the current pipeline state."""
+    """Return the current pipeline state plus which integrations are enabled."""
     return {
         "step1_done": pipeline_state["step1_done"],
         "step2_done": pipeline_state["step2_done"],
@@ -203,10 +228,17 @@ def get_status():
         "repo_path":  pipeline_state["repo_path"],
         "has_clusters": pipeline_state["clusters"] is not None,
         "error": pipeline_state["error"],
+        # Feature flags only (no secret values) so the frontend can adapt its UI.
+        "integrations": {
+            "auth": settings.auth_enabled,
+            "billing": settings.billing_enabled,
+            "supabase": settings.supabase_enabled,
+            "async_jobs": settings.redis_enabled,
+        },
     }
  
  
-@app.post("/api/scan")
+@app.post("/api/scan", dependencies=[rate_limit("scan"), meter("scan")])
 def scan_repo(req: ScanRequest):
     """Step 1: Scan a repo and generate edges.csv + nodes.csv."""
     try:
@@ -238,7 +270,7 @@ def scan_repo(req: ScanRequest):
         raise HTTPException(status_code=500, detail=str(e))
  
  
-@app.post("/api/ingest/")
+@app.post("/api/ingest/", dependencies=[rate_limit("scan"), meter("scan")])
 async def ingest_files(request: Request):
     """Ingest uploaded files: save to a temp dir, scan with AST, return results."""
     try:
@@ -326,7 +358,7 @@ async def ingest_files(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
  
  
-@app.post("/api/cluster")
+@app.post("/api/cluster", dependencies=[rate_limit("cluster"), meter("cluster")])
 def run_clustering():
     """Steps 2-3: Load graph into Neo4j and run Louvain community detection."""
     if not pipeline_state["step1_done"]:
@@ -393,11 +425,17 @@ def get_clusters():
     """Return the current clusters.json contents."""
     if not CLUSTERS_JSON.exists():
         raise HTTPException(status_code=404, detail="clusters.json not found. Run clustering first.")
- 
+
+    cache_key = "clusters:" + _sig_for(CLUSTERS_JSON)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         with open(CLUSTERS_JSON, encoding="utf-8") as f:
             data = json.load(f)
         validate_clusters(data)
+        cache_set(cache_key, data)
         return data
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Invalid clusters.json: {e}")
@@ -405,7 +443,7 @@ def get_clusters():
         raise HTTPException(status_code=500, detail=str(e))
  
  
-@app.post("/api/generate")
+@app.post("/api/generate", dependencies=[rate_limit("generate"), meter("generate")])
 def generate_service(req: GenerateRequest):
     """Step 4: Generate a microservice for a single cluster."""
     if not pipeline_state["step3_done"] and pipeline_state["clusters"] is None:
@@ -448,7 +486,7 @@ def generate_service(req: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/generate-all")
+@app.post("/api/generate-all", dependencies=[rate_limit("generate_all"), meter("generate_all")])
 def generate_all_services(req: GenerateAllRequest):
     """Step 4: Generate multiple microservices with bounded parallelism."""
     if not pipeline_state["step3_done"] and pipeline_state["clusters"] is None:
@@ -497,8 +535,42 @@ def generate_all_services(req: GenerateAllRequest):
     except Exception as e:
         pipeline_state["error"] = str(e)
         raise HTTPException(status_code=500, detail=str(e))
- 
- 
+
+
+@app.post("/api/generate-all/async", dependencies=[rate_limit("generate_all"), meter("generate_all")])
+async def generate_all_async(req: GenerateAllRequest):
+    """Queue batch generation as a background job (requires Redis); poll /api/jobs/{id}."""
+    if not settings.redis_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Async jobs require Redis. Use /api/generate-all instead.",
+        )
+
+    clusters = pipeline_state["clusters"]
+    if clusters is None:
+        if CLUSTERS_JSON.exists():
+            with open(CLUSTERS_JSON, encoding="utf-8") as f:
+                clusters = json.load(f)
+        else:
+            raise HTTPException(status_code=404, detail="No clusters available.")
+
+    selected_names = req.cluster_names or list(clusters.keys())
+    missing = [name for name in selected_names if name not in clusters]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Clusters not found: {missing}")
+
+    job_id = await enqueue_generate_all(req.repo_path, selected_names, req.max_workers)
+    return {"job_id": job_id, "status": "queued", "total": len(selected_names)}
+
+
+@app.get("/api/jobs/{job_id}")
+async def job_status(job_id: str):
+    """Poll the status/result of an async job."""
+    if not settings.redis_enabled:
+        raise HTTPException(status_code=503, detail="Async jobs require Redis.")
+    return await get_job(job_id)
+
+
 @app.get("/api/services")
 def list_services():
     """Step 5: List all generated microservices."""
@@ -543,7 +615,12 @@ def get_graph():
  
     if not nodes_csv.exists() or not edges_csv.exists():
         raise HTTPException(status_code=404, detail="Graph data not found. Run scan first.")
- 
+
+    cache_key = "graph:" + _sig_for(nodes_csv, edges_csv, CLUSTERS_JSON)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     # Build function -> cluster mapping from clusters.json
     fn_to_cluster: dict[str, str] = {}
     fn_to_community: dict[str, int] = {}
@@ -586,12 +663,14 @@ def get_graph():
                 edges.append({
                     "data": {"id": f"e{i}", "source": src, "target": tgt}
                 })
+
+    result = {"nodes": nodes, "edges": edges}
+    cache_set(cache_key, result)
+    return result
  
-    return {"nodes": nodes, "edges": edges}
  
- 
-@app.post("/api/chat/")
-@app.post("/api/chat")
+@app.post("/api/chat/", dependencies=[rate_limit("chat"), meter("chat")])
+@app.post("/api/chat", dependencies=[rate_limit("chat"), meter("chat")])
 def chat(req: ChatRequest):
     """Answer questions about the scanned codebase using Claude."""
     if anthropic is None:
@@ -682,3 +761,99 @@ def get_verification():
         return {"results": [], "summary": {"total": 0, "passed": 0, "failed": 0}}
     with open(results_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Billing (Stripe) — gated. Endpoints degrade gracefully when unconfigured.
+# ---------------------------------------------------------------------------
+@app.get("/api/billing/plans")
+def billing_plans():
+    """Public plan catalog (labels + monthly limits) and whether billing is live."""
+    return {
+        "billing_enabled": settings.billing_enabled,
+        "plans": {
+            name: {"label": p["label"], "limits": p["limits"]}
+            for name, p in PLANS.items()
+        },
+    }
+
+
+@app.get("/api/billing/subscription")
+def billing_subscription(principal: Principal = Depends(get_principal)):
+    """Return the caller's plan, status, and current-month usage."""
+    if not settings.supabase_enabled:
+        return {
+            "plan": "free",
+            "status": "active",
+            "usage": {},
+            "limits": PLANS["free"]["limits"],
+        }
+    user_id = db.get_or_create_user(principal.clerk_user_id, principal.email)
+    sub = db.get_subscription(user_id) or {}
+    plan = db.get_user_plan(user_id)
+    usage = {
+        event: db.count_usage_this_month(user_id, event)
+        for event in PLANS["free"]["limits"].keys()
+    }
+    return {
+        "plan": plan,
+        "status": sub.get("status", "active"),
+        "current_period_end": sub.get("current_period_end"),
+        "usage": usage,
+        "limits": PLANS.get(plan, PLANS["free"])["limits"],
+    }
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(
+    req: CheckoutRequest,
+    request: Request,
+    principal: Principal = Depends(get_principal),
+):
+    if not settings.billing_enabled:
+        raise HTTPException(status_code=503, detail="Billing is not configured.")
+    origin = request.headers.get("origin") or settings.frontend_url or ""
+    url = create_checkout_session(
+        req.plan,
+        principal.clerk_user_id,
+        principal.email,
+        success_url=f"{origin}/?checkout=success",
+        cancel_url=f"{origin}/?checkout=cancel",
+    )
+    return {"url": url}
+
+
+@app.post("/api/billing/portal")
+def billing_portal(
+    request: Request,
+    principal: Principal = Depends(get_principal),
+):
+    if not settings.billing_enabled:
+        raise HTTPException(status_code=503, detail="Billing is not configured.")
+    if not settings.supabase_enabled:
+        raise HTTPException(status_code=400, detail="No customer record available.")
+    user_id = db.get_or_create_user(principal.clerk_user_id, principal.email)
+    sub = db.get_subscription(user_id)
+    customer_id = (sub or {}).get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Stripe customer on file yet. Start a checkout first.",
+        )
+    return_url = (
+        settings.stripe_portal_return_url
+        or request.headers.get("origin")
+        or settings.frontend_url
+        or ""
+    )
+    return {"url": create_portal_session(customer_id, return_url)}
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """Stripe webhook receiver. Authenticated by signature, not a JWT."""
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    event = construct_event(payload, sig)
+    handle_event(event)
+    return {"received": True}

@@ -7,7 +7,9 @@ import NewSessionModal from "../components/NewSessionModal";
 import useSessionStore from "../hooks/useSessionStore";
 import {
   calculateMicroservices,
+  enqueueGenerateAllAsync,
   fetchGraph,
+  fetchJob,
   fetchServiceFile,
   generateAllMicroservices,
   generateMicroservice,
@@ -61,6 +63,37 @@ function filterSourceFiles(files) {
     const ext = file.name.slice(lastDot).toLowerCase();
     return SOURCE_EXTENSIONS.has(ext);
   });
+}
+
+// Poll an async generation job until it finishes (or times out).
+async function pollJobUntilDone(jobId, { intervalMs = 2000, timeoutMs = 600000 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const job = await fetchJob(jobId);
+    if (job.status === "complete") {
+      if (job.error) throw new Error(job.error);
+      return job.result || {};
+    }
+    if (job.status === "not_found") {
+      throw new Error("Generation job not found (it may have expired).");
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Generation timed out.");
+}
+
+// Prefer the async job queue (when Redis is configured server-side); fall back
+// to the synchronous endpoint when async jobs are unavailable.
+async function runBatchGeneration(clusterNames, repoPath) {
+  try {
+    const queued = await enqueueGenerateAllAsync(clusterNames, repoPath);
+    return await pollJobUntilDone(queued.job_id);
+  } catch (error) {
+    if (/async jobs require redis/i.test(error.message)) {
+      return await generateAllMicroservices(clusterNames, repoPath);
+    }
+    throw error;
+  }
 }
 
 function createInitialPipeline() {
@@ -485,7 +518,7 @@ export default function App() {
     let skippedCount = 0;
 
     try {
-      const batch = await generateAllMicroservices(clusterNames, repoPath);
+      const batch = await runBatchGeneration(clusterNames, repoPath);
       successCount = batch.generated ?? 0;
       failCount = batch.failed ?? 0;
       skippedCount = batch.skipped ?? 0;

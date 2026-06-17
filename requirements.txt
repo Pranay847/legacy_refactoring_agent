@@ -6,3 +6,17 @@ anthropic>=0.23.1
 deepdiff>=7.0.1
 pydantic>=2.6.4
 requests>=2.31.0
+
+# --- Phase 2: Clerk auth (verify Clerk-issued JWTs) ---
+pyjwt[crypto]>=2.8.0
+httpx>=0.27.0
+
+# --- Phase 1: Supabase (Postgres + storage + RLS) ---
+supabase>=2.4.0
+
+# --- Phase 3: Stripe subscription billing ---
+stripe>=9.0.0
+
+# --- Phases 4-5: Redis cache, rate limiting, async job queue ---
+redis>=5.0.0
+arq>=0.25.0

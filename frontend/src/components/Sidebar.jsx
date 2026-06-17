@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   History,
 } from "lucide-react";
+import { fetchStatus } from "../api";
 
 const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -44,16 +45,9 @@ export default function Sidebar({
     openai: "checking",
   });
 
-  // Check backend connectivity on mount
+  // Check backend connectivity on mount (shared client adds the auth token).
   useEffect(() => {
-    const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
-    fetch(`${API_BASE}/status`)
-      .then((res) => {
-        if (res.ok) {
-          return res.json();
-        }
-        throw new Error("Backend unreachable");
-      })
+    fetchStatus()
       .then(() => {
         setBackendStatus({ neo4j: "connected", openai: "connected" });
       })
