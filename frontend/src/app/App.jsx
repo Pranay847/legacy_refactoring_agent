@@ -9,18 +9,13 @@ import {
   calculateMicroservices,
   fetchGraph,
   fetchServiceFile,
+  generateAllMicroservices,
   generateMicroservice,
   listServices,
   resetWorkspace,
   scanRepository,
   uploadSessionFiles,
 } from "../api";
-
-const SIDEBAR_WIDTH_KEY = "legacy-refactoring-sidebar-width";
-const SIDEBAR_VISIBILITY_KEY = "legacy-refactoring-sidebar-visible";
-const DEFAULT_SIDEBAR_WIDTH = 320;
-const MIN_SIDEBAR_WIDTH = 260;
-const MAX_SIDEBAR_WIDTH = 520;
 
 function deriveProjectNameFromFiles(files) {
   const firstFile = files[0];
@@ -62,7 +57,7 @@ function filterSourceFiles(files) {
 
     // Include files with recognised source/config extensions
     const lastDot = file.name.lastIndexOf(".");
-    if (lastDot === -1) return false; // skip extensionless files
+    if (lastDot === -1) return false;
     const ext = file.name.slice(lastDot).toLowerCase();
     return SOURCE_EXTENSIONS.has(ext);
   });
@@ -87,6 +82,15 @@ function createInitialPipeline() {
   };
 }
 
+// Maps sidebar nav items to the dashboard section they should reveal.
+const SECTION_BY_VIEW = {
+  graph: "section-graph",
+  clusters: "section-clusters",
+  microservices: "section-microservices",
+  validation: "section-validation",
+  history: "section-history",
+};
+
 export default function App() {
   const store = useSessionStore();
   const [modalState, setModalState] = useState({
@@ -96,56 +100,9 @@ export default function App() {
     repoUrl: "",
   });
   const [searchQuery, setSearchQuery] = useState("");
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    if (typeof window === "undefined") return DEFAULT_SIDEBAR_WIDTH;
-
-    const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    if (Number.isNaN(stored) || stored <= 0) return DEFAULT_SIDEBAR_WIDTH;
-
-    return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, stored));
-  });
-  const [isSidebarVisible, setIsSidebarVisible] = useState(() => {
-    if (typeof window === "undefined") return true;
-
-    const stored = window.localStorage.getItem(SIDEBAR_VISIBILITY_KEY);
-    return stored === null ? true : stored === "true";
-  });
-  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [activeView, setActiveView] = useState("dashboard");
   const fileInputRef = useRef(null);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
-  }, [sidebarWidth]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(SIDEBAR_VISIBILITY_KEY, String(isSidebarVisible));
-  }, [isSidebarVisible]);
-
-  useEffect(() => {
-    if (!isResizingSidebar) return undefined;
-
-    const handlePointerMove = (event) => {
-      const nextWidth = Math.min(
-        MAX_SIDEBAR_WIDTH,
-        Math.max(MIN_SIDEBAR_WIDTH, event.clientX)
-      );
-      setSidebarWidth(nextWidth);
-    };
-
-    const handlePointerUp = () => {
-      setIsResizingSidebar(false);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-  }, [isResizingSidebar]);
+  const dashboardRef = useRef(null);
 
   const filteredSessions = store.sessions.filter((session) => {
     const query = searchQuery.trim().toLowerCase();
@@ -172,12 +129,10 @@ export default function App() {
     const rawFiles = Array.from(event.target.files || []);
     if (rawFiles.length === 0) return;
 
-    // Filter to source code files only (skips node_modules, .git, images, etc.)
     const selectedFiles = filterSourceFiles(rawFiles);
     const skipped = rawFiles.length - selectedFiles.length;
 
     if (selectedFiles.length === 0) {
-      // All files were filtered out — nothing useful to upload
       const tempSession = store.createSession({
         name: deriveProjectNameFromFiles(rawFiles),
         sourceType: "upload",
@@ -200,10 +155,8 @@ export default function App() {
       files: selectedFiles,
     });
 
-    // Reset the file input so re-uploading the same folder works
     event.target.value = "";
 
-    // --- Upload files to the backend and get the server-side repo path ---
     updatePipeline(session.id, (pipeline) => ({
       ...pipeline,
       actionState: { ...pipeline.actionState, upload: "running" },
@@ -220,7 +173,6 @@ export default function App() {
     try {
       const data = await uploadSessionFiles(session.id, selectedFiles, defaultName);
 
-      // Store the backend repo path so Scan uses it automatically
       const serverRepoPath = data.repo_path || "";
       store.setSessionRepoPath(session.id, serverRepoPath);
 
@@ -229,7 +181,6 @@ export default function App() {
         content: `Uploaded ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} to the server. ${data.functions ?? 0} functions detected across ${data.files?.length ?? 0} source files. Click **Scan** to run the full analysis pipeline.`,
       });
 
-      // If ingest already found functions, mark scan as done
       if (data.functions && data.functions > 0) {
         updatePipeline(session.id, (pipeline) => ({
           ...pipeline,
@@ -298,10 +249,6 @@ export default function App() {
 
   const handleSearchChange = (value) => {
     setSearchQuery(value);
-  };
-
-  const handleToggleSidebar = () => {
-    setIsSidebarVisible((value) => !value);
   };
 
   const handleDeleteSession = (sessionId) => {
@@ -422,7 +369,7 @@ export default function App() {
 
       store.addMessage(session.id, {
         role: "assistant",
-        content: `Microservice boundaries calculated successfully. Found ${clusterData.cluster_count ?? clusterNames.length} distinct service clusters.`,
+        content: `${clusterData.cached ? "Loaded cached" : "Calculated"} microservice boundaries. Found ${clusterData.cluster_count ?? clusterNames.length} distinct service clusters.`,
       });
       store.setSessionStatus(session.id, "clusters ready");
     } catch (error) {
@@ -530,40 +477,45 @@ export default function App() {
 
     store.addMessage(session.id, {
       role: "assistant",
-      content: `Starting batch generation for ${clusterNames.length} clusters...`,
+      content: `Starting batch generation for ${clusterNames.length} clusters. Existing generated services will be skipped automatically.`,
     });
 
     let successCount = 0;
     let failCount = 0;
+    let skippedCount = 0;
 
-    for (const clusterName of clusterNames) {
-      try {
-        const generated = await generateMicroservice(clusterName, repoPath);
-        successCount++;
+    try {
+      const batch = await generateAllMicroservices(clusterNames, repoPath);
+      successCount = batch.generated ?? 0;
+      failCount = batch.failed ?? 0;
+      skippedCount = batch.skipped ?? 0;
 
-        store.addMessage(session.id, {
-          role: "assistant",
-          content: `✓ Generated ${generated.service_name} from ${generated.cluster} (${successCount}/${clusterNames.length})`,
-        });
-      } catch (error) {
-        console.error(`Failed to generate ${clusterName}:`, error);
-        failCount++;
+      const summary = failCount === 0
+        ? `Batch generation finished: ${successCount} generated, ${skippedCount} reused from checkpoint.`
+        : `Batch generation finished with issues: ${successCount} generated, ${skippedCount} reused, ${failCount} failed.`;
 
-        store.addMessage(session.id, {
-          role: "assistant",
-          content: `✗ Failed to generate ${clusterName}: ${error.message}`,
-        });
-      }
+      store.addMessage(session.id, {
+        role: "assistant",
+        content: summary,
+      });
+    } catch (error) {
+      console.error("Batch generation failed:", error);
+      failCount = clusterNames.length;
+      updatePipeline(session.id, (pipeline) => ({
+        ...pipeline,
+        error: error.message,
+        actionState: {
+          ...pipeline.actionState,
+          generateAll: "error",
+        },
+      }));
+      store.addMessage(session.id, {
+        role: "assistant",
+        content: `Batch generation failed: ${error.message}`,
+      });
+      store.setSessionStatus(session.id, "error");
+      return;
     }
-
-    const summary = failCount === 0
-      ? `All ${successCount} microservices generated successfully!`
-      : `Batch generation complete: ${successCount} succeeded, ${failCount} failed.`;
-
-    store.addMessage(session.id, {
-      role: "assistant",
-      content: summary,
-    });
 
     // Fetch all generated services so the UI can display them
     try {
@@ -633,12 +585,93 @@ export default function App() {
     }
   };
 
+  // Sidebar navigation: highlight the chosen view and smooth-scroll the
+  // dashboard to the matching section (everything lives on one page).
+  const handleNavigate = (viewId) => {
+    setActiveView(viewId);
+
+    if (viewId === "dashboard") {
+      dashboardRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    const sectionId = SECTION_BY_VIEW[viewId];
+    if (!sectionId) return;
+
+    requestAnimationFrame(() => {
+      document
+        .getElementById(sectionId)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  // Generate for a specific cluster (called from clusters table)
+  const handleGenerateForCluster = async (clusterName) => {
+    const session = store.activeSession;
+    if (!session) return;
+
+    // Select the cluster first
+    handleSelectCluster(session.id, clusterName);
+
+    const repoPath = session.repoPath.trim();
+
+    setPipelineAction(session.id, "generate", "running");
+    store.setSessionStatus(session.id, "generating");
+
+    try {
+      const generated = await generateMicroservice(clusterName, repoPath);
+      const serviceName = generated.dir;
+      const preferredFile = generated.files.find((fileName) => fileName === "main.py") || generated.files[0];
+      const fileContent = preferredFile
+        ? await fetchServiceFile(serviceName, preferredFile)
+        : { content: "" };
+
+      updatePipeline(session.id, (pipeline) => ({
+        ...pipeline,
+        generatedService: {
+          cluster: generated.cluster,
+          serviceName: generated.service_name,
+          dir: generated.dir,
+          files: generated.files,
+          activeFile: preferredFile ?? null,
+          code: fileContent.content ?? "",
+        },
+        error: null,
+        actionState: {
+          ...pipeline.actionState,
+          generate: "success",
+        },
+      }));
+
+      store.addMessage(session.id, {
+        role: "assistant",
+        content: `Generated ${generated.service_name} from ${generated.cluster}.`,
+      });
+      store.setSessionStatus(session.id, "generation complete");
+    } catch (error) {
+      console.error(error);
+      updatePipeline(session.id, (pipeline) => ({
+        ...pipeline,
+        error: error.message,
+        actionState: {
+          ...pipeline.actionState,
+          generate: "error",
+        },
+      }));
+      store.addMessage(session.id, {
+        role: "assistant",
+        content: `Microservice generation failed: ${error.message}`,
+      });
+      store.setSessionStatus(session.id, "error");
+    }
+  };
+
   return (
     <div
-      className={`relative h-screen bg-zinc-100 dark:bg-zinc-600 ${
-        isResizingSidebar ? "select-none" : ""
-      }`}
+      className="relative flex h-screen"
+      style={{ background: "var(--bg-base)" }}
     >
+      {/* Hidden file input */}
       <input
         ref={fileInputRef}
         type="file"
@@ -649,79 +682,56 @@ export default function App() {
         directory=""
       />
 
-      <div className="flex h-full">
+      {/* Sidebar Navigation */}
+      <Sidebar
+        sessions={store.sessions}
+        filteredSessions={filteredSessions}
+        activeSession={store.activeSession}
+        activeSessionId={store.activeSessionId}
+        onSelect={store.setActiveSessionId}
+        onCreateFromUpload={handleOpenUploadPicker}
+        onCreateFromGithub={handleOpenGithubModal}
+        searchQuery={searchQuery}
+        onSearchChange={handleSearchChange}
+        onDeleteSession={handleDeleteSession}
+        onRepoPathChange={handleRepoPathChange}
+        onScan={handleScan}
+        onCalculateMicroservices={handleCalculateMicroservices}
+        onGenerateMicroservice={handleGenerateMicroservice}
+        onGenerateAllMicroservices={handleGenerateAllMicroservices}
+        onResetWorkspace={handleResetWorkspace}
+        activeView={activeView}
+        onViewChange={handleNavigate}
+      />
+
+      {/* Main Content Area */}
+      <main className="flex min-w-0 flex-1 flex-col">
+        {/* Header */}
+        <SessionHeader
+          session={store.activeSession}
+          onUploadClick={handleOpenUploadPicker}
+        />
+
+        {/* Dashboard Content */}
         <div
-          className={`relative shrink-0 overflow-visible transition-[width] duration-200 ease-out ${
-            isSidebarVisible ? "border-r border-zinc-800" : "border-r-0"
-          }`}
-          style={{ width: isSidebarVisible ? sidebarWidth : 0 }}
+          ref={dashboardRef}
+          className="flex-1 overflow-y-auto p-5"
+          style={{ background: "var(--bg-base)" }}
         >
-          {isSidebarVisible ? (
-            <>
-              <Sidebar
-                sessions={store.sessions}
-                filteredSessions={filteredSessions}
-                activeSession={store.activeSession}
-                activeSessionId={store.activeSessionId}
-                onSelect={store.setActiveSessionId}
-                onCreateFromUpload={handleOpenUploadPicker}
-                onCreateFromGithub={handleOpenGithubModal}
-                searchQuery={searchQuery}
-                onSearchChange={handleSearchChange}
-                onDeleteSession={handleDeleteSession}
-                onToggleSidebar={handleToggleSidebar}
-                onRepoPathChange={handleRepoPathChange}
-                onScan={handleScan}
-                onCalculateMicroservices={handleCalculateMicroservices}
-                onGenerateMicroservice={handleGenerateMicroservice}
-                onGenerateAllMicroservices={handleGenerateAllMicroservices}
-                onResetWorkspace={handleResetWorkspace}
-              />
-
-              <button
-                type="button"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  setIsResizingSidebar(true);
-                }}
-                className="absolute right-0 top-0 h-full w-3 translate-x-1/2 cursor-col-resize bg-transparent"
-                aria-label="Resize sidebar"
-                title="Resize sidebar"
-              >
-                <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-zinc-700/80" />
-              </button>
-            </>
-          ) : null}
-        </div>
-
-        <main className="flex min-w-0 flex-1 flex-col">
-          <SessionHeader
+          <ResultsPanel
             session={store.activeSession}
-            isSidebarVisible={isSidebarVisible}
-            onToggleSidebar={handleToggleSidebar}
+            onSelectCluster={handleSelectCluster}
+            onScan={handleScan}
+            onCalculateMicroservices={handleCalculateMicroservices}
+            onGenerateMicroservice={handleGenerateMicroservice}
+            onGenerateAllMicroservices={handleGenerateAllMicroservices}
+            onGenerateForCluster={handleGenerateForCluster}
+            onResetWorkspace={handleResetWorkspace}
           />
+        </div>
+      </main>
 
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 p-6 xl:grid-cols-[1.4fr_1fr]">
-            <div className="flex min-h-0 flex-col gap-6">
-              <div className="min-h-0 flex-1">
-                <ChatWindow
-                  session={store.activeSession}
-                  addMessage={store.addMessage}
-                  setSessionStatus={store.setSessionStatus}
-                />
-              </div>
-            </div>
-
-            <div className="min-h-0">
-              <ResultsPanel
-                session={store.activeSession}
-                onSelectCluster={handleSelectCluster}
-              />
-            </div>
-          </div>
-        </main>
-      </div>
-
+      {/* Modal */}
       <NewSessionModal
         isOpen={modalState.isOpen}
         mode={modalState.mode}

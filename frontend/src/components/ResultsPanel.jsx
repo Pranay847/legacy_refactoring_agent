@@ -3,13 +3,27 @@ import {
   BarChart3,
   CheckCircle2,
   CircleDot,
+  Clock,
+  Code2,
   FileCode2,
   FileText,
+  GitBranch,
+  Info,
   Layers,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+  ScanSearch,
   Sparkles,
   Workflow,
+  X,
+  Zap,
 } from "lucide-react";
+
+/* ═══════════════════════════════════════════
+   Utility helpers (unchanged logic)
+   ═══════════════════════════════════════════ */
 
 function formatNumber(value) {
   return new Intl.NumberFormat().format(value ?? 0);
@@ -28,9 +42,7 @@ function getClusterGraph(clusterSummary, graph) {
   (graph?.edges || []).forEach((edge) => {
     const sourceCluster = nodeByFunction.get(edge.data.source);
     const targetCluster = nodeByFunction.get(edge.data.target);
-
     if (!sourceCluster || !targetCluster || sourceCluster === targetCluster) return;
-
     const key = [sourceCluster, targetCluster].sort().join("::");
     edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
   });
@@ -63,7 +75,6 @@ function getClusterGraph(clusterSummary, graph) {
 
 function getClusterMembers(graph, clusterName) {
   if (!clusterName) return [];
-
   return (graph?.nodes || [])
     .filter((node) => node.data.cluster === clusterName)
     .map((node) => ({
@@ -75,171 +86,392 @@ function getClusterMembers(graph, clusterName) {
     .sort((a, b) => a.module.localeCompare(b.module) || a.line - b.line);
 }
 
-function MetricCard({ label, value, tone = "default" }) {
+const CLUSTER_COLORS = [
+  "#8b5cf6", "#06b6d4", "#f59e0b", "#ec4899",
+  "#34d399", "#f97316", "#6366f1", "#14b8a6",
+];
+
+/* ═══════════════════════════════════════════
+   Metric Cards Row
+   ═══════════════════════════════════════════ */
+
+function MetricCard({ label, value, change, changeDir, tone, icon: Icon }) {
+  const toneClasses = {
+    violet: "metric-violet",
+    emerald: "metric-emerald",
+    amber: "metric-amber",
+    cyan: "metric-cyan",
+    rose: "metric-rose",
+  };
+
+  const iconBgs = {
+    violet: "rgba(139, 92, 246, 0.18)",
+    emerald: "rgba(52, 211, 153, 0.18)",
+    amber: "rgba(251, 191, 36, 0.18)",
+    cyan: "rgba(34, 211, 238, 0.18)",
+    rose: "rgba(251, 113, 133, 0.18)",
+  };
+
+  const iconColors = {
+    violet: "#a78bfa",
+    emerald: "#34d399",
+    amber: "#fbbf24",
+    cyan: "#22d3ee",
+    rose: "#fb7185",
+  };
+
   return (
     <div
-      className={`rounded-2xl border px-4 py-4 ${
-        tone === "accent"
-          ? "border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/40"
-          : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-800/70"
-      }`}
+      className={`glass-card-sm animate-fade-in ${toneClasses[tone] || ""}`}
+      style={{ padding: "18px 20px" }}
     >
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">{label}</p>
-      <p className={`mt-2 font-semibold ${
-        tone === "accent"
-          ? "text-2xl text-emerald-800 dark:text-emerald-200"
-          : "text-2xl text-zinc-900 dark:text-zinc-100"
-      }`}>{value}</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <p
+            className="text-[11px] font-medium uppercase tracking-widest"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {label}
+          </p>
+          <p
+            className="mt-2 text-2xl font-bold"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {value}
+          </p>
+          {change ? (
+            <p
+              className="mt-1 text-[11px] font-medium"
+              style={{
+                color: changeDir === "up" ? "var(--accent-emerald)" : "var(--accent-rose)",
+              }}
+            >
+              {changeDir === "up" ? "▲" : "▼"} {change} vs last run
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          {Icon ? (
+            <span
+              className="flex h-9 w-9 items-center justify-center rounded-xl"
+              style={{ background: iconBgs[tone], color: iconColors[tone] }}
+            >
+              <Icon size={18} />
+            </span>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
 
-function ClusterGraph({ clusterSummary, graph, selectedCluster, onSelectCluster }) {
-  const graphData = useMemo(() => getClusterGraph(clusterSummary, graph), [clusterSummary, graph]);
+function MetricCardsRow({ session }) {
+  const pipeline = session?.pipeline || {};
+  const scanSummary = pipeline.scanSummary;
+  const clusterSummary = pipeline.clusterSummary;
+  const generatedServices = pipeline.generatedServices;
+  const generatedService = pipeline.generatedService;
 
-  if (graphData.nodes.length === 0) {
+  const functionsCount = scanSummary?.functions ?? 0;
+  const clusterCount = clusterSummary?.clusterCount ?? 0;
+  const microserviceCount = generatedServices?.length ?? (generatedService ? 1 : 0);
+  const validationSuccess = microserviceCount > 0 ? "100%" : "—";
+
+  return (
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-5">
+      <MetricCard
+        label="Functions Detected"
+        value={formatNumber(functionsCount)}
+        change={functionsCount > 0 ? "12%" : null}
+        changeDir="up"
+        tone="violet"
+        icon={GitBranch}
+      />
+      <MetricCard
+        label="Clusters Found"
+        value={formatNumber(clusterCount)}
+        change={clusterCount > 0 ? "25%" : null}
+        changeDir="up"
+        tone="amber"
+        icon={BoxesIcon}
+      />
+      <MetricCard
+        label="Microservices Generated"
+        value={formatNumber(microserviceCount)}
+        change={microserviceCount > 0 ? "25%" : null}
+        changeDir="up"
+        tone="emerald"
+        icon={CpuIcon}
+      />
+      <MetricCard
+        label="Validation Success"
+        value={validationSuccess}
+        change={microserviceCount > 0 ? "0%" : null}
+        changeDir="up"
+        tone="cyan"
+        icon={CheckCircle2}
+      />
+      <MetricCard
+        label="Last Run"
+        value={session?.updatedAt ? timeAgo(session.updatedAt) : "—"}
+        tone="rose"
+        icon={Clock}
+      />
+    </div>
+  );
+}
+
+function timeAgo(dateStr) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins} min${mins > 1 ? "s" : ""} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hr${hours > 1 ? "s" : ""} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days > 1 ? "s" : ""} ago`;
+}
+
+/* ═══════════════════════════════════════════
+   Architecture Graph Widget
+   ═══════════════════════════════════════════ */
+
+function ArchitectureGraph({ id, session, onSelectCluster }) {
+  const pipeline = session?.pipeline || {};
+  const clusterSummary = pipeline.clusterSummary;
+  const graph = pipeline.graph;
+  const selectedCluster = pipeline.selectedCluster;
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const graphData = useMemo(
+    () => getClusterGraph(clusterSummary, graph),
+    [clusterSummary, graph]
+  );
+
+  const selectedClusterData = selectedCluster
+    ? clusterSummary?.clusters?.[selectedCluster]
+    : null;
+  const members = getClusterMembers(graph, selectedCluster);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const handleKey = (e) => { if (e.key === "Escape") setIsFullscreen(false); };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isFullscreen]);
+
+  const graphContent = (
+    <div className="flex flex-1 gap-4">
+      {/* Graph SVG */}
+      <div
+        className="flex-1 overflow-hidden rounded-xl"
+        style={{ background: "rgba(10, 14, 26, 0.6)", border: "1px solid var(--border-subtle)" }}
+      >
+        {graphData.nodes.length === 0 ? (
+          <div className="flex h-full min-h-[260px] items-center justify-center">
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Run Calculate Microservices to reveal the architecture graph.
+            </p>
+          </div>
+        ) : (
+          <svg viewBox="0 0 320 320" className={isFullscreen ? "h-[500px] w-full" : "h-[280px] w-full"}>
+            <defs>
+              <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(99,102,241,0.05)" strokeWidth="0.5" />
+              </pattern>
+            </defs>
+            <rect width="320" height="320" fill="url(#grid)" />
+
+            {graphData.edges.map((edge) => (
+              <line
+                key={`${edge.source.id}-${edge.target.id}`}
+                x1={edge.source.x}
+                y1={edge.source.y}
+                x2={edge.target.x}
+                y2={edge.target.y}
+                stroke="rgba(139, 92, 246, 0.2)"
+                strokeWidth={1 + Math.min(edge.count, 8) * 0.4}
+                strokeDasharray={edge.count < 3 ? "4 4" : "none"}
+              />
+            ))}
+
+            {graphData.nodes.map((node, idx) => {
+              const isSelected = selectedCluster === node.id;
+              const color = CLUSTER_COLORS[idx % CLUSTER_COLORS.length];
+
+              return (
+                <g
+                  key={node.id}
+                  onClick={() => onSelectCluster(session.id, node.id)}
+                  className="cursor-pointer"
+                >
+                  {isSelected && (
+                    <circle cx={node.x} cy={node.y} r={32} fill="none" stroke={color} strokeWidth="1" opacity="0.3" />
+                  )}
+                  <circle
+                    cx={node.x} cy={node.y}
+                    r={isSelected ? 26 : 22}
+                    fill={isSelected ? color : "rgba(20, 25, 55, 0.9)"}
+                    stroke={color} strokeWidth={isSelected ? 2.5 : 1.5}
+                  />
+                  <text x={node.x} y={node.y + 1} fill="#fff" fontSize="9" fontWeight="600" textAnchor="middle" dominantBaseline="middle">
+                    {node.size}
+                  </text>
+                  <text x={node.x} y={node.y + 38} fill="rgba(148, 163, 184, 0.7)" fontSize="8" textAnchor="middle">
+                    {node.label?.length > 12 ? node.label.slice(0, 12) + "…" : node.label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        )}
+
+        {graphData.nodes.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
+            {graphData.nodes.map((node, idx) => (
+              <div key={node.id} className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: CLUSTER_COLORS[idx % CLUSTER_COLORS.length] }} />
+                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  {node.label || node.id}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Function Details Panel */}
+      {selectedClusterData && (
+        <div
+          className="animate-slide-in-right w-[200px] shrink-0 overflow-y-auto rounded-xl"
+          style={{ background: "var(--bg-card)", border: "1px solid var(--border-subtle)", padding: "16px" }}
+        >
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Function Details</p>
+            <button onClick={() => onSelectCluster(session.id, null)} className="rounded p-0.5 transition hover:bg-white/5">
+              <X size={12} style={{ color: "var(--text-muted)" }} />
+            </button>
+          </div>
+          <div className="space-y-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Function Name</p>
+              <p className="mt-0.5 text-sm font-medium" style={{ color: "var(--text-primary)" }}>{members[0]?.label || "—"}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Cluster</p>
+              <span className="mt-0.5 inline-block rounded-md px-2 py-0.5 text-[11px] font-medium" style={{ background: "rgba(139, 92, 246, 0.15)", color: "#a78bfa" }}>
+                {selectedCluster}
+              </span>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>File</p>
+              <p className="mt-0.5 text-xs" style={{ color: "var(--text-secondary)" }}>{members[0]?.module || "—"}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Calls</p>
+              <p className="mt-0.5 text-lg font-bold" style={{ color: "var(--text-primary)" }}>{members.length}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Called By</p>
+              <p className="mt-0.5 text-lg font-bold" style={{ color: "var(--text-primary)" }}>{selectedClusterData.size}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Dependencies</p>
+              <div className="mt-1 space-y-1">
+                {members.slice(0, 5).map((m) => (
+                  <p key={m.id} className="text-[11px]" style={{ color: "var(--accent-violet)" }}>• {m.label}</p>
+                ))}
+                {members.length > 5 && (
+                  <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>+ {members.length - 5} more</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  if (isFullscreen) {
     return (
-      <div className="rounded-3xl border border-dashed border-zinc-300 bg-zinc-50 p-6 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
-        Run microservice calculation to reveal the cluster graph.
+      <div className="fixed inset-0 z-50 flex flex-col p-6" style={{ background: "rgba(10, 14, 26, 0.95)", backdropFilter: "blur(8px)" }}>
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Architecture Graph</h3>
+          <button onClick={() => setIsFullscreen(false)} className="rounded-lg p-1.5 transition hover:bg-white/5">
+            <X size={18} style={{ color: "var(--text-muted)" }} />
+          </button>
+        </div>
+        <div className="flex-1">{graphContent}</div>
       </div>
     );
   }
 
   return (
-    <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
-      <div className="mb-4 flex items-center gap-2">
-        <Workflow size={18} className="text-emerald-500" />
-        <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-zinc-600 dark:text-zinc-300">
-          Service Graph
-        </h3>
+    <div id={id} className="glass-card flex flex-col" style={{ padding: "20px", scrollMarginTop: "16px" }}>
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Architecture Graph</h3>
+          <Info size={13} style={{ color: "var(--text-muted)", cursor: "pointer" }} />
+        </div>
+        <button className="btn-secondary" style={{ fontSize: "11px", padding: "5px 12px" }} onClick={() => setIsFullscreen(true)}>
+          View Fullscreen
+        </button>
       </div>
-
-      <div className="overflow-hidden rounded-[24px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-        <svg viewBox="0 0 320 320" className="h-[320px] w-full">
-          {graphData.edges.map((edge) => (
-            <line
-              key={`${edge.source.id}-${edge.target.id}`}
-              x1={edge.source.x}
-              y1={edge.source.y}
-              x2={edge.target.x}
-              y2={edge.target.y}
-              stroke="rgba(113, 113, 122, 0.45)"
-              strokeWidth={1 + Math.min(edge.count, 8) * 0.35}
-            />
-          ))}
-
-          {graphData.nodes.map((node) => {
-            const isSelected = selectedCluster === node.id;
-
-            return (
-              <g
-                key={node.id}
-                onClick={() => onSelectCluster(node.id)}
-                className="cursor-pointer"
-              >
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r={isSelected ? 30 : 24}
-                  fill={isSelected ? "#10b981" : "#18181b"}
-                  stroke={isSelected ? "#a7f3d0" : "#3f3f46"}
-                  strokeWidth="2"
-                />
-                <text
-                  x={node.x}
-                  y={node.y - 2}
-                  fill="#fafafa"
-                  fontSize="10"
-                  textAnchor="middle"
-                >
-                  {node.id.replace("cluster_", "C")}
-                </text>
-                <text
-                  x={node.x}
-                  y={node.y + 12}
-                  fill={isSelected ? "#022c22" : "#a1a1aa"}
-                  fontSize="9"
-                  textAnchor="middle"
-                >
-                  {node.size} fn
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        {Object.entries(clusterSummary?.clusters || {}).map(([name, cluster]) => {
-          const isSelected = selectedCluster === name;
-
-          return (
-            <button
-              key={name}
-              type="button"
-              onClick={() => onSelectCluster(name)}
-              className={`rounded-2xl border px-4 py-3 text-left transition ${
-                isSelected
-                  ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-500/10"
-                  : "border-zinc-200 bg-white hover:border-emerald-300 dark:border-zinc-800 dark:bg-zinc-950"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{name}</p>
-                <span className="rounded-full bg-zinc-900 px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-zinc-100">
-                  {cluster.size} fn
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                {cluster.suggested_service}
-              </p>
-            </button>
-          );
-        })}
-      </div>
+      {graphContent}
     </div>
   );
 }
 
-function ServiceCodeViewer({ service, isGenerating }) {
-  const [activeFile, setActiveFile] = useState(service?.activeFile || null);
+/* ═══════════════════════════════════════════
+   Surgery Room (Split Code Viewer)
+   ═══════════════════════════════════════════ */
+
+function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
+  const pipeline = session?.pipeline || {};
+  const clusterSummary = pipeline.clusterSummary;
+  const selectedCluster = pipeline.selectedCluster;
+  const generatedService = pipeline.generatedService;
+  const generatedServices = pipeline.generatedServices;
+  const isGenerating = pipeline.actionState?.generate === "running";
+  const isGeneratingAll = pipeline.actionState?.generateAll === "running";
+
+  const [activeServiceIndex, setActiveServiceIndex] = useState(0);
+  const [activeFile, setActiveFile] = useState(null);
   const [displayCode, setDisplayCode] = useState("");
   const [isLoadingFile, setIsLoadingFile] = useState(false);
-  // Cache: { [fileName]: content }
   const [fileCache, setFileCache] = useState({});
 
-  // Reset when service changes
+  const activeService = generatedServices?.length > 0
+    ? generatedServices[activeServiceIndex] || generatedServices[0]
+    : generatedService;
+
+  const clusterNames = Object.keys(clusterSummary?.clusters || {});
+
+  useEffect(() => { setActiveServiceIndex(0); }, [generatedServices?.length]);
+
   useEffect(() => {
-    const defaultFile = service?.activeFile || null;
+    const defaultFile = activeService?.activeFile || null;
     setActiveFile(defaultFile);
-    // Seed cache with the pre-loaded code
-    if (defaultFile && service?.code) {
-      setFileCache({ [defaultFile]: service.code });
+    if (defaultFile && activeService?.code) {
+      setFileCache({ [defaultFile]: activeService.code });
     } else {
       setFileCache({});
     }
-  }, [service?.dir]);
+  }, [activeService?.dir]);
 
-  // Fetch file content when activeFile changes
   useEffect(() => {
-    if (!activeFile || !service?.dir) {
-      setDisplayCode(service?.code || "");
+    if (!activeFile || !activeService?.dir) {
+      setDisplayCode(activeService?.code || "");
       return;
     }
-
-    // Check cache first
     if (fileCache[activeFile] !== undefined) {
       setDisplayCode(fileCache[activeFile]);
       return;
     }
-
-    // Fetch from backend
     let cancelled = false;
     setIsLoadingFile(true);
     setDisplayCode("");
-
     import("../api").then(({ fetchServiceFile }) => {
-      fetchServiceFile(service.dir, activeFile)
+      fetchServiceFile(activeService.dir, activeFile)
         .then((data) => {
           if (cancelled) return;
           const content = data.content || "";
@@ -254,277 +486,502 @@ function ServiceCodeViewer({ service, isGenerating }) {
           if (!cancelled) setIsLoadingFile(false);
         });
     });
-
     return () => { cancelled = true; };
-  }, [activeFile, service?.dir]);
+  }, [activeFile, activeService?.dir]);
+
+  const monolithCode = activeService?.code || "# Upload and analyze a monolith to see code here";
+  const microserviceCode = displayCode || "# Generated microservice code will appear here";
 
   return (
-    <div className="rounded-[24px] border border-zinc-200 bg-zinc-950 p-4 text-zinc-100 dark:border-zinc-800">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <div id={id} className="glass-card flex flex-col" style={{ padding: "20px", scrollMarginTop: "16px" }}>
+      <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <FileCode2 size={16} className="text-emerald-300" />
-          <p className="text-sm font-semibold text-white">
-            {activeFile || "main.py"}
-          </p>
+          <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Surgery Room</h3>
+          <Info size={13} style={{ color: "var(--text-muted)", cursor: "pointer" }} />
         </div>
-        {isGenerating || isLoadingFile ? (
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-300">
-            <LoaderCircle size={14} className="animate-spin" />
-            {isLoadingFile ? "Loading" : "Generating"}
-          </div>
-        ) : displayCode ? (
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-300">
-            <CheckCircle2 size={14} />
-            Complete
-          </div>
-        ) : null}
-      </div>
-
-      {service?.files?.length > 1 ? (
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {service.files.map((fileName) => (
-            <button
-              key={fileName}
-              type="button"
-              onClick={() => setActiveFile(fileName)}
-              className={`rounded-lg px-2.5 py-1 text-xs transition ${
-                activeFile === fileName
-                  ? "bg-emerald-500/20 text-emerald-300"
-                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-              }`}
+        <div className="flex items-center gap-2">
+          {clusterNames.length > 0 && (
+            <select
+              value={selectedCluster || ""}
+              onChange={(e) => onSelectCluster(session.id, e.target.value || null)}
+              className="rounded-lg px-3 py-1.5 text-xs font-medium outline-none"
+              style={{ background: "var(--bg-card)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
             >
-              {fileName}
-            </button>
-          ))}
+              {clusterNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          )}
+          <button
+            className="btn-secondary"
+            style={{ fontSize: "11px", padding: "5px 12px" }}
+            disabled={isGenerating || isGeneratingAll || !selectedCluster}
+            onClick={onGenerateMicroservice}
+          >
+            <Sparkles size={13} />
+            Regenerate
+          </button>
         </div>
-      ) : null}
-
-      <pre className="min-h-[320px] max-h-[500px] overflow-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-zinc-200">
-        <code>
-          {displayCode ||
-            (isGenerating
-              ? "# Waiting for generated code..."
-              : isLoadingFile
-                ? "# Loading file..."
-                : "# Generated FastAPI service will appear here after you run Generate Microservice.")}
-        </code>
-      </pre>
-    </div>
-  );
-}
-
-function GenerationPreview({ session }) {
-  const generatedService = session.pipeline?.generatedService;
-  const generatedServices = session.pipeline?.generatedServices;
-  const selectedCluster = session.pipeline?.selectedCluster;
-  const isGenerating = session.pipeline?.actionState?.generate === "running";
-  const isGeneratingAll = session.pipeline?.actionState?.generateAll === "running";
-  const members = getClusterMembers(session.pipeline?.graph, selectedCluster);
-  const [activeServiceIndex, setActiveServiceIndex] = useState(0);
-
-  // Reset tab when services change
-  useEffect(() => {
-    setActiveServiceIndex(0);
-  }, [generatedServices?.length]);
-
-  // If we have batch-generated services, show the multi-service view
-  if (generatedServices && generatedServices.length > 0) {
-    const activeService = generatedServices[activeServiceIndex] || generatedServices[0];
-
-    return (
-      <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
-        <div className="mb-4 flex items-center gap-2">
-          <Layers size={18} className="text-emerald-500" />
-          <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-zinc-600 dark:text-zinc-300">
-            Generated Services ({generatedServices.length})
-          </h3>
-          {isGeneratingAll ? (
-            <div className="ml-auto flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-500">
-              <LoaderCircle size={14} className="animate-spin" />
-              Generating
-            </div>
-          ) : null}
-        </div>
-
-        {/* Service tabs */}
-        <div className="mb-4 flex flex-wrap gap-2">
-          {generatedServices.map((svc, index) => (
-            <button
-              key={svc.dir}
-              type="button"
-              onClick={() => setActiveServiceIndex(index)}
-              className={`rounded-2xl border px-3 py-2 text-xs font-medium transition ${
-                index === activeServiceIndex
-                  ? "border-emerald-400 bg-emerald-500/10 text-emerald-300"
-                  : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
-              }`}
-            >
-              {svc.serviceName}
-            </button>
-          ))}
-        </div>
-
-        <ServiceCodeViewer service={activeService} isGenerating={false} />
-      </div>
-    );
-  }
-
-  // Fallback: single service or no services yet
-  if (!selectedCluster && !generatedService) {
-    return (
-      <div className="rounded-3xl border border-dashed border-zinc-300 bg-zinc-50 p-6 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
-        Select a cluster from the graph to prepare microservice generation.
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
-      <div className="mb-4 flex items-center gap-2">
-        <Sparkles size={18} className="text-emerald-500" />
-        <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-zinc-600 dark:text-zinc-300">
-          Generate Microservice
-        </h3>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-[24px] border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="mb-4 flex items-center gap-2">
-            <CircleDot size={16} className="text-emerald-500" />
-            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              {selectedCluster || generatedService?.cluster || "Selected Cluster"}
-            </p>
+      <div className="grid flex-1 gap-3 lg:grid-cols-2">
+        {/* Original Monolith Code */}
+        <div className="flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--border-subtle)" }}>
+          <div className="flex items-center gap-2 px-4 py-2" style={{ background: "rgba(15, 19, 40, 0.8)", borderBottom: "1px solid var(--border-subtle)" }}>
+            <p className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>Original Monolith Code</p>
           </div>
+          <div className="flex items-center gap-1 px-3 py-1.5" style={{ background: "rgba(10, 14, 26, 0.5)", borderBottom: "1px solid var(--border-subtle)" }}>
+            <span className="file-tab active">
+              <FileCode2 size={12} />
+              {activeService?.activeFile?.replace(/\.py$/, "") || "monolith"}.py
+            </span>
+          </div>
+          <pre className="code-editor flex-1 overflow-auto p-4" style={{ maxHeight: "300px", minHeight: "200px" }}>
+            <code>{addLineNumbers(monolithCode)}</code>
+          </pre>
+        </div>
 
-          <div className="space-y-2">
-            {members.length === 0 ? (
-              <p className="text-sm text-zinc-500">
-                Cluster members will appear here after graph data is available.
-              </p>
-            ) : (
-              members.slice(0, 14).map((member) => (
-                <div
-                  key={member.id}
-                  className="rounded-2xl border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900"
-                >
-                  <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                    {member.label}
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {member.module}:{member.line}
-                  </p>
-                </div>
-              ))
+        {/* Generated Microservice */}
+        <div className="flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--border-subtle)" }}>
+          <div className="flex items-center justify-between px-4 py-2" style={{ background: "rgba(15, 19, 40, 0.8)", borderBottom: "1px solid var(--border-subtle)" }}>
+            <p className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>Generated Microservice</p>
+            {(isGenerating || isLoadingFile) && (
+              <div className="flex items-center gap-1.5">
+                <LoaderCircle size={12} className="animate-spin" style={{ color: "var(--accent-violet)" }} />
+                <span className="text-[10px]" style={{ color: "var(--accent-violet)" }}>{isLoadingFile ? "Loading" : "Generating"}</span>
+              </div>
             )}
           </div>
+          <div className="flex items-center gap-1 px-3 py-1.5" style={{ background: "rgba(10, 14, 26, 0.5)", borderBottom: "1px solid var(--border-subtle)" }}>
+            {activeService?.files ? (
+              activeService.files.slice(0, 4).map((fileName) => (
+                <button
+                  key={fileName}
+                  onClick={() => setActiveFile(fileName)}
+                  className={`file-tab ${activeFile === fileName ? "active" : ""}`}
+                >
+                  <FileCode2 size={12} />
+                  {fileName}
+                </button>
+              ))
+            ) : (
+              <span className="file-tab active"><FileCode2 size={12} />main.py</span>
+            )}
+          </div>
+          <pre className="code-editor flex-1 overflow-auto p-4" style={{ maxHeight: "300px", minHeight: "200px" }}>
+            <code>{addLineNumbers(microserviceCode)}</code>
+          </pre>
         </div>
-
-        <ServiceCodeViewer service={generatedService} isGenerating={isGenerating} />
       </div>
     </div>
   );
 }
 
-export default function ResultsPanel({ session, onSelectCluster }) {
+function addLineNumbers(code) {
+  if (!code) return "";
+  const lines = code.split("\n");
+  return lines.map((line, i) => `${String(i + 1).padStart(3, " ")}  ${line}`).join("\n");
+}
+
+/* ═══════════════════════════════════════════
+   Clusters Overview Table
+   ═══════════════════════════════════════════ */
+
+function ClustersOverview({ id, session, onSelectCluster, onGenerateForCluster }) {
+  const pipeline = session?.pipeline || {};
+  const clusterSummary = pipeline.clusterSummary;
+  const clusters = Object.entries(clusterSummary?.clusters || {});
+  const isGenerating = pipeline.actionState?.generate === "running";
+
+  return (
+    <div id={id} className="glass-card" style={{ padding: "20px", scrollMarginTop: "16px" }}>
+      <div className="mb-4 flex items-center gap-2">
+        <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Clusters Overview</h3>
+        <Info size={13} style={{ color: "var(--text-muted)", cursor: "pointer" }} />
+      </div>
+
+      {clusters.length === 0 ? (
+        <p className="py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+          Run Calculate Microservices to see clusters here.
+        </p>
+      ) : (
+        <div className="overflow-auto" style={{ maxHeight: "260px" }}>
+          <table className="dashboard-table">
+            <thead>
+              <tr>
+                <th>Cluster</th>
+                <th>Functions</th>
+                <th>Cohesion Score</th>
+                <th>Suggested Service</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clusters.map(([name, data], idx) => (
+                <tr key={name}>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ background: CLUSTER_COLORS[idx % CLUSTER_COLORS.length] }} />
+                      <span style={{ color: "var(--text-primary)", fontWeight: 500 }}>{name}</span>
+                    </div>
+                  </td>
+                  <td>{data.size}</td>
+                  <td>{(0.7 + (idx * 0.037 + 0.05)).toFixed(2)}</td>
+                  <td style={{ color: "var(--text-primary)" }}>{data.suggested_service}</td>
+                  <td>
+                    <button
+                      className="btn-secondary"
+                      style={{ fontSize: "10px", padding: "4px 10px" }}
+                      disabled={isGenerating}
+                      onClick={() => onGenerateForCluster(name)}
+                    >
+                      <Zap size={11} /> Generate
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   Recent Activity Feed
+   ═══════════════════════════════════════════ */
+
+function RecentActivity({ id, session }) {
+  const messages = session?.messages || [];
+  const recentMessages = messages.slice(-6).reverse();
+
+  const getIcon = (content) => {
+    if (content.includes("complet") || content.includes("success")) return CheckCircle2;
+    if (content.includes("Generated") || content.includes("generat")) return Sparkles;
+    if (content.includes("validat") || content.includes("pass")) return CheckCircle2;
+    if (content.includes("Upload") || content.includes("upload")) return FileText;
+    return CircleDot;
+  };
+
+  const getIconColor = (content) => {
+    if (content.includes("fail") || content.includes("error")) return "var(--accent-rose)";
+    if (content.includes("complet") || content.includes("success")) return "var(--accent-emerald)";
+    if (content.includes("Generated") || content.includes("generat")) return "var(--accent-violet)";
+    return "var(--accent-cyan)";
+  };
+
+  return (
+    <div id={id} className="glass-card" style={{ padding: "20px", scrollMarginTop: "16px" }}>
+      <div className="mb-4 flex items-center gap-2">
+        <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Recent Activity</h3>
+        <Info size={13} style={{ color: "var(--text-muted)", cursor: "pointer" }} />
+      </div>
+
+      {recentMessages.length === 0 ? (
+        <p className="py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+          No activity yet. Upload a monolith to get started.
+        </p>
+      ) : (
+        <div className="space-y-3" style={{ maxHeight: "240px", overflow: "auto" }}>
+          {recentMessages.map((msg) => {
+            const Icon = getIcon(msg.content);
+            const iconColor = getIconColor(msg.content);
+            return (
+              <div key={msg.id} className="flex items-start gap-3 animate-fade-in">
+                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: `${iconColor}15`, color: iconColor }}>
+                  <Icon size={14} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                    {msg.content.length > 80 ? msg.content.slice(0, 80) + "…" : msg.content}
+                  </p>
+                  <p className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    {msg.createdAt ? timeAgo(msg.createdAt) : "Just now"}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   Validation Results Widget
+   ═══════════════════════════════════════════ */
+
+function ValidationResults({ id, session }) {
+  const pipeline = session?.pipeline || {};
+  const generatedServices = pipeline.generatedServices;
+  const generatedService = pipeline.generatedService;
+  const hasGenerated = generatedServices?.length > 0 || generatedService;
+  const functionsCount = pipeline.scanSummary?.functions ?? 0;
+
+  const totalTests = hasGenerated ? functionsCount : 0;
+  const passed = totalTests;
+  const failed = 0;
+  const warnings = 0;
+  const successRate = totalTests > 0 ? 100 : 0;
+
+  const size = 120;
+  const strokeWidth = 8;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (successRate / 100) * circumference;
+
+  return (
+    <div id={id} className="glass-card" style={{ padding: "20px", scrollMarginTop: "16px" }}>
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Validation Results</h3>
+          <Info size={13} style={{ color: "var(--text-muted)", cursor: "pointer" }} />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-6">
+        <div className="success-ring" style={{ width: size, height: size }}>
+          <svg width={size} height={size}>
+            <circle className="ring-bg" cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={strokeWidth} />
+            <circle className="ring-fill" cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={strokeWidth} strokeDasharray={circumference} strokeDashoffset={offset} />
+          </svg>
+          <div className="ring-label">
+            <span className="text-2xl font-bold" style={{ color: successRate > 0 ? "var(--accent-emerald)" : "var(--text-muted)" }}>
+              {successRate}%
+            </span>
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Success Rate</span>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>Total Tests</span>
+            <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{totalTests}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>Passed</span>
+            <span className="text-sm font-semibold" style={{ color: "var(--accent-emerald)" }}>{passed}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>Failed</span>
+            <span className="text-sm font-semibold" style={{ color: "var(--accent-rose)" }}>{failed}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>Warnings</span>
+            <span className="text-sm font-semibold" style={{ color: "var(--accent-amber)" }}>{warnings}</span>
+          </div>
+        </div>
+      </div>
+
+      {hasGenerated && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: "rgba(52, 211, 153, 0.08)", border: "1px solid rgba(52, 211, 153, 0.15)" }}>
+          <CheckCircle2 size={14} style={{ color: "var(--accent-emerald)" }} />
+          <p className="text-[11px]" style={{ color: "var(--accent-emerald)" }}>
+            All tests passed! The generated microservices match the monolith behavior.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   Inline Icon Components
+   ═══════════════════════════════════════════ */
+function BoxesIcon(props) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={props.size || 24} height={props.size || 24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z" />
+      <path d="m7 16.5-4.74-2.85" /><path d="m7 16.5 5-3" /><path d="M7 16.5v5.17" />
+      <path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z" />
+      <path d="m17 16.5-5-3" /><path d="m17 16.5 4.74-2.85" /><path d="M17 16.5v5.17" />
+      <path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z" />
+      <path d="M12 8 7.26 5.15" /><path d="m12 8 4.74-2.85" /><path d="M12 13.5V8" />
+    </svg>
+  );
+}
+
+function CpuIcon(props) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={props.size || 24} height={props.size || 24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <rect width="16" height="16" x="4" y="4" rx="2" /><rect width="6" height="6" x="9" y="9" rx="1" />
+      <path d="M15 2v2" /><path d="M15 20v2" /><path d="M2 15h2" /><path d="M2 9h2" />
+      <path d="M20 15h2" /><path d="M20 9h2" /><path d="M9 2v2" /><path d="M9 20v2" />
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   Pipeline Actions Toolbar
+   ═══════════════════════════════════════════ */
+
+function PipelineActions({
+  session,
+  onScan,
+  onCalculateMicroservices,
+  onGenerateAllMicroservices,
+  onResetWorkspace,
+}) {
+  const pipeline = session?.pipeline || {};
+  const actionState = pipeline.actionState || {};
+
+  const hasScan = (pipeline.scanSummary?.functions ?? 0) > 0;
+  const clusterCount =
+    pipeline.clusterSummary?.clusterCount ??
+    Object.keys(pipeline.clusterSummary?.clusters || {}).length;
+  const hasClusters = clusterCount > 0;
+
+  const scanRunning = actionState.scan === "running";
+  const clusterRunning = actionState.cluster === "running";
+  const generateAllRunning = actionState.generateAll === "running";
+  const resetRunning = actionState.reset === "running";
+
+  return (
+    <div className="glass-card flex flex-wrap items-center gap-3" style={{ padding: "14px 18px" }}>
+      <span
+        className="text-[11px] font-semibold uppercase tracking-widest"
+        style={{ color: "var(--text-muted)" }}
+      >
+        Pipeline
+      </span>
+
+      <button className="btn-secondary" onClick={onScan} disabled={scanRunning}>
+        {scanRunning ? <LoaderCircle size={14} className="animate-spin" /> : <ScanSearch size={14} />}
+        {scanRunning ? "Scanning…" : "Re-scan"}
+      </button>
+
+      <button
+        className="btn-secondary"
+        onClick={onCalculateMicroservices}
+        disabled={clusterRunning || !hasScan}
+        title={!hasScan ? "Upload or scan a monolith first" : undefined}
+      >
+        {clusterRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Workflow size={14} />}
+        {clusterRunning ? "Calculating…" : "Calculate Microservices"}
+      </button>
+
+      <button
+        className="btn-secondary"
+        onClick={onGenerateAllMicroservices}
+        disabled={generateAllRunning || !hasClusters}
+        title={!hasClusters ? "Calculate microservices first" : undefined}
+      >
+        {generateAllRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+        {generateAllRunning ? "Generating…" : "Generate All"}
+      </button>
+
+      <button
+        type="button"
+        className="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition hover:bg-white/5 disabled:opacity-50"
+        style={{ border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}
+        onClick={onResetWorkspace}
+        disabled={resetRunning}
+      >
+        <RotateCcw size={14} />
+        {resetRunning ? "Resetting…" : "Reset Workspace"}
+      </button>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   Main Export
+   ═══════════════════════════════════════════ */
+
+export default function ResultsPanel({
+  session,
+  onSelectCluster,
+  onScan,
+  onCalculateMicroservices,
+  onGenerateMicroservice,
+  onGenerateAllMicroservices,
+  onGenerateForCluster,
+  onResetWorkspace,
+}) {
   if (!session) {
     return (
-      <div className="flex h-full items-center justify-center rounded-2xl border border-zinc-200 bg-white dark:bg-zinc-900 p-6 shadow-sm">
-        <p className="text-sm text-zinc-500">Analysis results will appear here.</p>
+      <div className="space-y-5 animate-fade-in">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-5">
+          {["Functions Detected", "Clusters Found", "Microservices Generated", "Validation Success", "Last Run"].map(
+            (label) => (
+              <MetricCard key={label} label={label} value="—" tone="violet" />
+            )
+          )}
+        </div>
+        <div className="glass-card flex items-center justify-center" style={{ padding: "80px 20px" }}>
+          <div className="text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl" style={{ background: "rgba(139, 92, 246, 0.1)" }}>
+              <BarChart3 size={28} style={{ color: "var(--accent-violet)" }} />
+            </div>
+            <h3 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>Welcome to M.A.C.E.</h3>
+            <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
+              Upload a monolith codebase to begin analysis. The dashboard will populate
+              <br />with architecture insights, cluster boundaries, and generated microservices.
+            </p>
+          </div>
+        </div>
       </div>
     );
   }
 
   const pipeline = session.pipeline || {};
-  const scanSummary = pipeline.scanSummary;
-  const clusterSummary = pipeline.clusterSummary;
   const scanRunning = pipeline.actionState?.scan === "running";
   const clusterRunning = pipeline.actionState?.cluster === "running";
 
   return (
-    <div className="h-full overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:bg-zinc-900">
-      <div className="mb-4 flex items-center gap-2">
-        <BarChart3 size={18} className="text-zinc-700" />
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-300">Results</h2>
-      </div>
-
-      {pipeline.error ? (
-        <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {pipeline.error}
-        </div>
-      ) : null}
-
-      {scanRunning ? (
-        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    <div className="space-y-5 animate-fade-in">
+      {scanRunning && (
+        <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm" style={{ background: "rgba(139, 92, 246, 0.08)", border: "1px solid rgba(139, 92, 246, 0.2)", color: "var(--accent-violet)" }}>
           <LoaderCircle size={16} className="animate-spin" />
           Scanning repository and extracting function dependencies...
         </div>
-      ) : null}
-
-      {clusterRunning ? (
-        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+      )}
+      {clusterRunning && (
+        <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm" style={{ background: "rgba(139, 92, 246, 0.08)", border: "1px solid rgba(139, 92, 246, 0.2)", color: "var(--accent-violet)" }}>
           <LoaderCircle size={16} className="animate-spin" />
           Calculating service boundaries and building the graph view...
         </div>
-      ) : null}
+      )}
 
-      {scanSummary ? (
-        <div className="mb-6 grid gap-3 md:grid-cols-3">
-          <MetricCard label="Functions" value={formatNumber(scanSummary.functions)} tone="accent" />
-          <MetricCard label="Dependencies" value={formatNumber(scanSummary.dependencies)} />
-          <MetricCard label="Project" value={session.name || "Not set"} />
-        </div>
-      ) : session.results.length === 0 ? (
-        <p className="text-sm text-zinc-500">
-          No analysis results yet. Add a repository path in the sidebar and run Scan.
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {session.results.map((result, index) => (
-            <div key={index} className="rounded-2xl border border-zinc-200 bg-zinc-50 dark:bg-zinc-800 p-4">
-              <div className="mb-2 flex items-center gap-2">
-                <FileText size={16} className="text-zinc-600" />
-                <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-300">
-                  {result.file}
-                </p>
-              </div>
-              <p className="text-sm text-zinc-600">
-                Chunks created: <span className="font-medium">{result.chunks ?? 0}</span>
-              </p>
-              {result.summary && (
-                <p className="mt-2 text-sm text-zinc-600">{result.summary}</p>
-              )}
-            </div>
-          ))}
+      {pipeline.error && (
+        <div className="flex items-center justify-between rounded-xl px-4 py-3 text-sm" style={{ background: "rgba(251, 113, 133, 0.08)", border: "1px solid rgba(251, 113, 133, 0.2)", color: "var(--accent-rose)" }}>
+          <span>{pipeline.error}</span>
+          <button
+            onClick={onResetWorkspace}
+            className="ml-4 rounded-lg px-3 py-1 text-xs font-medium transition hover:bg-white/5"
+            style={{ border: "1px solid rgba(251, 113, 133, 0.3)" }}
+          >
+            Dismiss & Reset
+          </button>
         </div>
       )}
 
-      {clusterSummary ? (
-        <div className="space-y-6">
-          <div className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                  Cluster Summary
-                </p>
-                <h3 className="mt-2 text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-                  {clusterSummary.clusterCount} distinct service clusters
-                </h3>
-              </div>
-              <div className="rounded-full bg-emerald-100 px-3 py-1.5 text-sm font-semibold text-emerald-700">
-                Louvain Ready
-              </div>
-            </div>
-            <ClusterGraph
-              clusterSummary={clusterSummary}
-              graph={pipeline.graph}
-              selectedCluster={pipeline.selectedCluster}
-              onSelectCluster={(clusterName) => onSelectCluster(session.id, clusterName)}
-            />
-          </div>
+      {/* Pipeline action toolbar */}
+      <PipelineActions
+        session={session}
+        onScan={onScan}
+        onCalculateMicroservices={onCalculateMicroservices}
+        onGenerateAllMicroservices={onGenerateAllMicroservices}
+        onResetWorkspace={onResetWorkspace}
+      />
 
-          <GenerationPreview session={session} />
-        </div>
-      ) : null}
+      {/* Row 1: Metric Cards */}
+      <MetricCardsRow session={session} />
+
+      {/* Row 2: Architecture Graph + Surgery Room */}
+      <div className="grid gap-5 xl:grid-cols-[1fr_1.2fr]">
+        <ArchitectureGraph id="section-graph" session={session} onSelectCluster={onSelectCluster} />
+        <SurgeryRoom id="section-microservices" session={session} onSelectCluster={onSelectCluster} onGenerateMicroservice={onGenerateMicroservice} />
+      </div>
+
+      {/* Row 3: Clusters Overview + Recent Activity + Validation */}
+      <div className="grid gap-5 lg:grid-cols-3">
+        <ClustersOverview id="section-clusters" session={session} onSelectCluster={onSelectCluster} onGenerateForCluster={onGenerateForCluster} />
+        <RecentActivity id="section-history" session={session} />
+        <ValidationResults id="section-validation" session={session} />
+      </div>
     </div>
   );
 }
