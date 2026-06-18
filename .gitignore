@@ -15,6 +15,7 @@ env/
 .vscode/
 .idea/
 .codex/
+.cursor/
 *.swp
 *.swo
 
