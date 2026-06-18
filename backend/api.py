@@ -2,9 +2,8 @@
 Compatibility shim.
 ====================================================================
 The canonical FastAPI application now lives in ``app.py`` (referenced by the
-``Procfile`` and ``api/index.py``). This module simply re-exports it so legacy
-launch commands such as ``uvicorn api:app`` (from the ``backend/`` directory)
-keep working.
+``Procfile``). This module simply re-exports it so legacy launch commands such
+as ``uvicorn api:app`` (from the ``backend/`` directory) keep working.
 
 Do NOT add endpoints or logic here. Edit ``app.py`` instead.
 """
