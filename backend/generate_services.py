@@ -114,6 +114,45 @@ ALL_EXTENSIONS = [
 ]
 
 
+def resolve_module_file(repo_root: Path, module: str) -> Path | None:
+    """Locate the source file for a dotted module name under a repo root."""
+    module_parts = module.split(".")
+    candidates: list[Path] = []
+
+    for ext in ALL_EXTENSIONS:
+        dotted = Path(*module_parts).with_suffix(ext)
+        candidates.extend([
+            repo_root / dotted,
+            repo_root / "src" / dotted,
+        ])
+        if len(module_parts) > 1:
+            short = Path(*module_parts[1:]).with_suffix(ext)
+            candidates.extend([
+                repo_root / short,
+                repo_root / "src" / short,
+            ])
+        candidates.append(repo_root / f"{module_parts[-1]}{ext}")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file():
+            return candidate
+
+    # Last resort: shallowest file match by module basename (e.g. test_api.py).
+    for ext in ALL_EXTENSIONS:
+        matches = sorted(
+            repo_root.rglob(f"{module_parts[-1]}{ext}"),
+            key=lambda path: len(path.parts),
+        )
+        if matches:
+            return matches[0]
+
+    return None
+
+
 def collect_source_for_cluster(cluster: dict, repo_root: str) -> dict[str, str]:
     root      = Path(repo_root)
     collected = {}
@@ -122,17 +161,7 @@ def collect_source_for_cluster(cluster: dict, repo_root: str) -> dict[str, str]:
         qualified = member["function"]
         module    = member["module"]
 
-        module_parts = module.split(".")
-        source_file = None
-        for ext in ALL_EXTENSIONS:
-            rel_path = Path(*module_parts).with_suffix(ext)
-            for base in [root, root / "src"]:
-                candidate = base / rel_path
-                if candidate.exists():
-                    source_file = candidate
-                    break
-            if source_file:
-                break
+        source_file = resolve_module_file(root, module)
 
         if not source_file:
             print(f"  [WARN] Could not find file for module '{module}' - skipping")

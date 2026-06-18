@@ -150,6 +150,13 @@ export async function fetchClusterSource(clusterName, repoPath) {
   return parseJsonResponse(response, "Failed to load original source");
 }
 
+export async function fetchVerification() {
+  const response = await fetch(`${API_BASE}/verification`, {
+    headers: await authHeaders(),
+  });
+  return parseJsonResponse(response, "Failed to load verification results");
+}
+
 export async function fetchServiceFile(serviceName, fileName) {
   const response = await fetch(
     `${API_BASE}/services/${encodeURIComponent(serviceName)}/${encodeURIComponent(fileName)}`,

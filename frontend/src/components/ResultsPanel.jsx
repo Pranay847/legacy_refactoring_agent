@@ -86,6 +86,28 @@ function getClusterMembers(graph, clusterName) {
     .sort((a, b) => a.module.localeCompare(b.module) || a.line - b.line);
 }
 
+/** Internal-call ratio for a cluster (1.0 = fully cohesive). */
+function clusterCohesion(clusterName, graph) {
+  const members = new Set(
+    (graph?.nodes || [])
+      .filter((node) => node.data.cluster === clusterName)
+      .map((node) => node.data.id)
+  );
+  if (members.size === 0) return null;
+
+  let internal = 0;
+  let external = 0;
+  for (const edge of graph?.edges || []) {
+    const srcIn = members.has(edge.data.source);
+    const tgtIn = members.has(edge.data.target);
+    if (srcIn && tgtIn) internal += 1;
+    else if (srcIn || tgtIn) external += 1;
+  }
+
+  const total = internal + external;
+  return total === 0 ? 1 : internal / total;
+}
+
 const CLUSTER_COLORS = [
   "#8b5cf6", "#06b6d4", "#f59e0b", "#ec4899",
   "#34d399", "#f97316", "#6366f1", "#14b8a6",
@@ -165,7 +187,7 @@ function MetricCard({ label, value, change, changeDir, tone, icon: Icon }) {
   );
 }
 
-function MetricCardsRow({ session }) {
+function MetricCardsRow({ session, verificationSummary }) {
   const pipeline = session?.pipeline || {};
   const scanSummary = pipeline.scanSummary;
   const clusterSummary = pipeline.clusterSummary;
@@ -174,40 +196,41 @@ function MetricCardsRow({ session }) {
 
   const functionsCount = scanSummary?.functions ?? 0;
   const clusterCount = clusterSummary?.clusterCount ?? 0;
-  const microserviceCount = generatedServices?.length ?? (generatedService ? 1 : 0);
-  const validationSuccess = microserviceCount > 0 ? "100%" : "—";
+  const microserviceCount =
+    pipeline.backendServiceCount ??
+    generatedServices?.length ??
+    (generatedService ? 1 : 0);
+
+  const totalVerification = verificationSummary?.total ?? 0;
+  const passedVerification = verificationSummary?.passed ?? 0;
+  const validationSuccess =
+    totalVerification > 0
+      ? `${Math.round((passedVerification / totalVerification) * 100)}%`
+      : "—";
 
   return (
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-5">
       <MetricCard
         label="Functions Detected"
         value={formatNumber(functionsCount)}
-        change={functionsCount > 0 ? "12%" : null}
-        changeDir="up"
         tone="violet"
         icon={GitBranch}
       />
       <MetricCard
         label="Clusters Found"
         value={formatNumber(clusterCount)}
-        change={clusterCount > 0 ? "25%" : null}
-        changeDir="up"
         tone="amber"
         icon={BoxesIcon}
       />
       <MetricCard
         label="Microservices Generated"
         value={formatNumber(microserviceCount)}
-        change={microserviceCount > 0 ? "25%" : null}
-        changeDir="up"
         tone="emerald"
         icon={CpuIcon}
       />
       <MetricCard
         label="Validation Success"
         value={validationSuccess}
-        change={microserviceCount > 0 ? "0%" : null}
-        changeDir="up"
         tone="cyan"
         icon={CheckCircle2}
       />
@@ -425,7 +448,7 @@ function ArchitectureGraph({ id, session, onSelectCluster }) {
    Surgery Room (Split Code Viewer)
    ═══════════════════════════════════════════ */
 
-function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
+function SurgeryRoom({ id, session, onSelectCluster, onRegenerateMicroservice }) {
   const pipeline = session?.pipeline || {};
   const clusterSummary = pipeline.clusterSummary;
   const selectedCluster = pipeline.selectedCluster;
@@ -434,7 +457,10 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
   const isGenerating = pipeline.actionState?.generate === "running";
   const isGeneratingAll = pipeline.actionState?.generateAll === "running";
 
-  const repoPath = session?.repoPath || "";
+  const repoPath =
+    session?.repoPath ||
+    session?.pipeline?.scanSummary?.repoPath ||
+    "";
 
   const [activeServiceIndex, setActiveServiceIndex] = useState(0);
   const [activeFile, setActiveFile] = useState(null);
@@ -566,7 +592,7 @@ function SurgeryRoom({ id, session, onSelectCluster, onGenerateMicroservice }) {
             className="btn-secondary"
             style={{ fontSize: "11px", padding: "5px 12px" }}
             disabled={isGenerating || isGeneratingAll || !selectedCluster}
-            onClick={onGenerateMicroservice}
+            onClick={onRegenerateMicroservice}
           >
             <Sparkles size={13} />
             Regenerate
@@ -646,6 +672,7 @@ function addLineNumbers(code) {
 function ClustersOverview({ id, session, onSelectCluster, onGenerateForCluster }) {
   const pipeline = session?.pipeline || {};
   const clusterSummary = pipeline.clusterSummary;
+  const graph = pipeline.graph;
   const clusters = Object.entries(clusterSummary?.clusters || {});
   const isGenerating = pipeline.actionState?.generate === "running";
 
@@ -682,7 +709,12 @@ function ClustersOverview({ id, session, onSelectCluster, onGenerateForCluster }
                     </div>
                   </td>
                   <td>{data.size}</td>
-                  <td>{(0.7 + (idx * 0.037 + 0.05)).toFixed(2)}</td>
+                  <td>
+                    {(() => {
+                      const score = clusterCohesion(name, graph);
+                      return score == null ? "—" : score.toFixed(2);
+                    })()}
+                  </td>
                   <td style={{ color: "var(--text-primary)" }}>{data.suggested_service}</td>
                   <td>
                     <button
@@ -769,24 +801,27 @@ function RecentActivity({ id, session }) {
    Validation Results Widget
    ═══════════════════════════════════════════ */
 
-function ValidationResults({ id, session }) {
-  const pipeline = session?.pipeline || {};
-  const generatedServices = pipeline.generatedServices;
-  const generatedService = pipeline.generatedService;
-  const hasGenerated = generatedServices?.length > 0 || generatedService;
-  const functionsCount = pipeline.scanSummary?.functions ?? 0;
-
-  const totalTests = hasGenerated ? functionsCount : 0;
-  const passed = totalTests;
-  const failed = 0;
+function ValidationResults({ id, session, verification, isLoading }) {
+  const summary = verification?.summary ?? { total: 0, passed: 0, failed: 0 };
+  const results = verification?.results ?? [];
+  const totalTests = summary.total ?? 0;
+  const passed = summary.passed ?? 0;
+  const failed = summary.failed ?? 0;
   const warnings = 0;
-  const successRate = totalTests > 0 ? 100 : 0;
+  const successRate = totalTests > 0 ? Math.round((passed / totalTests) * 100) : 0;
+  const failedTests = results.filter((result) => result.passed === false);
 
   const size = 120;
   const strokeWidth = 8;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (successRate / 100) * circumference;
+  const ringColor =
+    totalTests === 0
+      ? "var(--text-muted)"
+      : failed > 0
+        ? "var(--accent-amber)"
+        : "var(--accent-emerald)";
 
   return (
     <div id={id} className="glass-card" style={{ padding: "20px", scrollMarginTop: "16px" }}>
@@ -795,6 +830,9 @@ function ValidationResults({ id, session }) {
           <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Validation Results</h3>
           <Info size={13} style={{ color: "var(--text-muted)", cursor: "pointer" }} />
         </div>
+        {isLoading && (
+          <LoaderCircle size={14} className="animate-spin" style={{ color: "var(--accent-violet)" }} />
+        )}
       </div>
 
       <div className="flex items-center gap-6">
@@ -804,8 +842,8 @@ function ValidationResults({ id, session }) {
             <circle className="ring-fill" cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={strokeWidth} strokeDasharray={circumference} strokeDashoffset={offset} />
           </svg>
           <div className="ring-label">
-            <span className="text-2xl font-bold" style={{ color: successRate > 0 ? "var(--accent-emerald)" : "var(--text-muted)" }}>
-              {successRate}%
+            <span className="text-2xl font-bold" style={{ color: ringColor }}>
+              {totalTests > 0 ? `${successRate}%` : "—"}
             </span>
             <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Success Rate</span>
           </div>
@@ -831,11 +869,40 @@ function ValidationResults({ id, session }) {
         </div>
       </div>
 
-      {hasGenerated && (
+      {totalTests === 0 && !isLoading && (
+        <div className="mt-4 rounded-lg px-3 py-2" style={{ background: "rgba(148, 163, 184, 0.08)", border: "1px solid rgba(148, 163, 184, 0.15)" }}>
+          <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            No shadow tests yet. Run <code style={{ color: "var(--text-secondary)" }}>python backend/shadow_tester.py</code> to compare monolith vs microservice behavior.
+          </p>
+        </div>
+      )}
+
+      {failed > 0 && (
+        <div className="mt-4 space-y-2">
+          {failedTests.slice(0, 5).map((test) => (
+            <div
+              key={test.id || test.description}
+              className="rounded-lg px-3 py-2"
+              style={{ background: "rgba(251, 113, 133, 0.08)", border: "1px solid rgba(251, 113, 133, 0.15)" }}
+            >
+              <p className="text-[11px] font-medium" style={{ color: "var(--accent-rose)" }}>
+                {test.description || test.id}
+              </p>
+              {(test.diff || []).slice(0, 2).map((line) => (
+                <p key={line} className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  {line}
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {totalTests > 0 && failed === 0 && (
         <div className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: "rgba(52, 211, 153, 0.08)", border: "1px solid rgba(52, 211, 153, 0.15)" }}>
           <CheckCircle2 size={14} style={{ color: "var(--accent-emerald)" }} />
           <p className="text-[11px]" style={{ color: "var(--accent-emerald)" }}>
-            All tests passed! The generated microservices match the monolith behavior.
+            All shadow tests passed. Generated microservices match monolith behavior.
           </p>
         </div>
       )}
@@ -877,6 +944,7 @@ function PipelineActions({
   session,
   onScan,
   onCalculateMicroservices,
+  onGenerateMicroservice,
   onGenerateAllMicroservices,
   onResetWorkspace,
 }) {
@@ -888,9 +956,11 @@ function PipelineActions({
     pipeline.clusterSummary?.clusterCount ??
     Object.keys(pipeline.clusterSummary?.clusters || {}).length;
   const hasClusters = clusterCount > 0;
+  const selectedCluster = pipeline.selectedCluster;
 
   const scanRunning = actionState.scan === "running";
   const clusterRunning = actionState.cluster === "running";
+  const generateRunning = actionState.generate === "running";
   const generateAllRunning = actionState.generateAll === "running";
   const resetRunning = actionState.reset === "running";
 
@@ -923,8 +993,24 @@ function PipelineActions({
 
       <button
         className="btn-secondary"
+        onClick={onGenerateMicroservice}
+        disabled={generateRunning || generateAllRunning || !hasClusters || !selectedCluster}
+        title={
+          !hasClusters
+            ? "Calculate microservices first"
+            : !selectedCluster
+              ? "Select a cluster in the graph or clusters table"
+              : `Generate code for ${selectedCluster}`
+        }
+      >
+        {generateRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+        {generateRunning ? "Generating…" : "Generate Microservices"}
+      </button>
+
+      <button
+        className="btn-secondary"
         onClick={onGenerateAllMicroservices}
-        disabled={generateAllRunning || !hasClusters}
+        disabled={generateAllRunning || generateRunning || !hasClusters}
         title={!hasClusters ? "Calculate microservices first" : undefined}
       >
         {generateAllRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
@@ -956,10 +1042,46 @@ export default function ResultsPanel({
   onScan,
   onCalculateMicroservices,
   onGenerateMicroservice,
+  onRegenerateMicroservice,
   onGenerateAllMicroservices,
   onGenerateForCluster,
   onResetWorkspace,
 }) {
+  const pipeline = session?.pipeline || {};
+  const [verification, setVerification] = useState(null);
+  const [verificationLoading, setVerificationLoading] = useState(false);
+
+  useEffect(() => {
+    if (!session) {
+      setVerification(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setVerificationLoading(true);
+    import("../api")
+      .then(({ fetchVerification }) => fetchVerification())
+      .then((data) => {
+        if (!cancelled) setVerification(data);
+      })
+      .catch(() => {
+        if (!cancelled) setVerification(null);
+      })
+      .finally(() => {
+        if (!cancelled) setVerificationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    session?.id,
+    session?.updatedAt,
+    pipeline.actionState?.generate,
+    pipeline.actionState?.generateAll,
+    pipeline.actionState?.cluster,
+    pipeline.actionState?.scan,
+  ]);
+
   if (!session) {
     return (
       <div className="space-y-5 animate-fade-in">
@@ -986,7 +1108,6 @@ export default function ResultsPanel({
     );
   }
 
-  const pipeline = session.pipeline || {};
   const scanRunning = pipeline.actionState?.scan === "running";
   const clusterRunning = pipeline.actionState?.cluster === "running";
   const view = activeView || "dashboard";
@@ -1024,21 +1145,22 @@ export default function ResultsPanel({
         session={session}
         onScan={onScan}
         onCalculateMicroservices={onCalculateMicroservices}
+        onGenerateMicroservice={onGenerateMicroservice}
         onGenerateAllMicroservices={onGenerateAllMicroservices}
         onResetWorkspace={onResetWorkspace}
       />
 
       {view === "dashboard" && (
         <>
-          <MetricCardsRow session={session} />
+          <MetricCardsRow session={session} verificationSummary={verification?.summary} />
           <div className="grid gap-5 xl:grid-cols-[1fr_1.2fr]">
             <ArchitectureGraph session={session} onSelectCluster={onSelectCluster} />
-            <SurgeryRoom session={session} onSelectCluster={onSelectCluster} onGenerateMicroservice={onGenerateMicroservice} />
+            <SurgeryRoom session={session} onSelectCluster={onSelectCluster} onRegenerateMicroservice={onRegenerateMicroservice} />
           </div>
           <div className="grid gap-5 lg:grid-cols-3">
             <ClustersOverview session={session} onSelectCluster={onSelectCluster} onGenerateForCluster={onGenerateForCluster} />
             <RecentActivity session={session} />
-            <ValidationResults session={session} />
+            <ValidationResults session={session} verification={verification} isLoading={verificationLoading} />
           </div>
         </>
       )}
@@ -1052,11 +1174,11 @@ export default function ResultsPanel({
       )}
 
       {view === "microservices" && (
-        <SurgeryRoom session={session} onSelectCluster={onSelectCluster} onGenerateMicroservice={onGenerateMicroservice} />
+        <SurgeryRoom session={session} onSelectCluster={onSelectCluster} onRegenerateMicroservice={onRegenerateMicroservice} />
       )}
 
       {view === "validation" && (
-        <ValidationResults session={session} />
+        <ValidationResults session={session} verification={verification} isLoading={verificationLoading} />
       )}
 
       {view === "history" && (

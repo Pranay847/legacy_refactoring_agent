@@ -332,33 +332,37 @@ export default function App() {
       generationRevision: revision,
     };
 
-    updatePipeline(sessionId, (pipeline) => {
-      let generatedServices = pipeline.generatedServices;
-      if (generatedServices?.length) {
-        const idx = generatedServices.findIndex(
-          (svc) =>
-            svc.cluster === generated.cluster ||
-            svc.dir === generated.dir ||
-            svc.dir?.startsWith(`${generated.cluster}_`)
-        );
-        if (idx >= 0) {
-          generatedServices = generatedServices.map((svc, i) =>
-            i === idx ? { ...svc, ...serviceEntry } : svc
+      updatePipeline(sessionId, (pipeline) => {
+        let generatedServices = pipeline.generatedServices;
+        if (generatedServices?.length) {
+          const idx = generatedServices.findIndex(
+            (svc) =>
+              svc.cluster === generated.cluster ||
+              svc.dir === generated.dir ||
+              svc.dir?.startsWith(`${generated.cluster}_`)
           );
+          if (idx >= 0) {
+            generatedServices = generatedServices.map((svc, i) =>
+              i === idx ? { ...svc, ...serviceEntry } : svc
+            );
+          }
         }
-      }
 
-      return {
-        ...pipeline,
-        generatedService: serviceEntry,
-        generatedServices,
-        error: null,
-        actionState: {
-          ...pipeline.actionState,
-          generate: "success",
-        },
-      };
-    });
+        return {
+          ...pipeline,
+          generatedService: serviceEntry,
+          generatedServices,
+          backendServiceCount: Math.max(
+            pipeline.backendServiceCount ?? 0,
+            generatedServices?.length ?? (serviceEntry ? 1 : 0)
+          ),
+          error: null,
+          actionState: {
+            ...pipeline.actionState,
+            generate: "success",
+          },
+        };
+      });
   };
 
   const handleScan = async () => {
@@ -428,17 +432,28 @@ export default function App() {
     try {
       const clusterData = await calculateMicroservices();
       const graphData = await fetchGraph().catch(() => null);
+      const servicesData = await listServices().catch(() => ({ services: [] }));
 
       const clusterNames = Object.keys(clusterData.clusters || {});
+      const functionCount =
+        graphData?.nodes?.length ??
+        session.pipeline?.scanSummary?.functions ??
+        0;
 
       updatePipeline(session.id, (pipeline) => ({
         ...pipeline,
+        scanSummary: {
+          ...(pipeline.scanSummary ?? {}),
+          functions: functionCount,
+          repoPath: pipeline.scanSummary?.repoPath || session.repoPath,
+        },
         clusterSummary: {
           clusterCount: clusterData.cluster_count ?? clusterNames.length,
           clusters: clusterData.clusters ?? {},
         },
         graph: graphData,
         selectedCluster: clusterNames[0] ?? pipeline.selectedCluster,
+        backendServiceCount: servicesData.services?.length ?? 0,
         error: null,
         actionState: {
           ...pipeline.actionState,
@@ -469,7 +484,7 @@ export default function App() {
     }
   };
 
-  const handleGenerateMicroservice = async () => {
+  const handleGenerateMicroservice = async ({ force = false } = {}) => {
     const session = store.activeSession;
     if (!session) return;
 
@@ -479,7 +494,7 @@ export default function App() {
     if (!selectedCluster) {
       store.addMessage(session.id, {
         role: "assistant",
-        content: "Select a cluster from the graph before generating a microservice.",
+        content: "Select a cluster from the graph or clusters table before generating a microservice.",
       });
       return;
     }
@@ -488,7 +503,7 @@ export default function App() {
     store.setSessionStatus(session.id, "generating");
 
     try {
-      const generated = await generateMicroservice(selectedCluster, repoPath, { force: true });
+      const generated = await generateMicroservice(selectedCluster, repoPath, { force });
       const serviceName = generated.dir;
       const preferredFile = generated.files.find((fileName) => fileName === "main.py") || generated.files[0];
       const fileContent = preferredFile
@@ -500,7 +515,9 @@ export default function App() {
       const action =
         generated.generation_status === "skipped"
           ? `Reused existing ${generated.service_name} (already generated).`
-          : `Regenerated ${generated.service_name} from ${generated.cluster}.`;
+          : force
+            ? `Regenerated ${generated.service_name} from ${generated.cluster}.`
+            : `Generated ${generated.service_name} from ${generated.cluster}.`;
 
       store.addMessage(session.id, {
         role: "assistant",
@@ -621,6 +638,7 @@ export default function App() {
       updatePipeline(session.id, (pipeline) => ({
         ...pipeline,
         generatedServices: allServices,
+        backendServiceCount: allServices.length,
         actionState: {
           ...pipeline.actionState,
           generateAll: failCount === 0 ? "success" : "error",
@@ -775,7 +793,8 @@ export default function App() {
             onSelectCluster={handleSelectCluster}
             onScan={handleScan}
             onCalculateMicroservices={handleCalculateMicroservices}
-            onGenerateMicroservice={handleGenerateMicroservice}
+            onGenerateMicroservice={() => handleGenerateMicroservice({ force: false })}
+            onRegenerateMicroservice={() => handleGenerateMicroservice({ force: true })}
             onGenerateAllMicroservices={handleGenerateAllMicroservices}
             onGenerateForCluster={handleGenerateForCluster}
             onResetWorkspace={handleResetWorkspace}

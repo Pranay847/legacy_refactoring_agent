@@ -5,7 +5,7 @@ Two modes:
 
   1. RUNNER MODE (default)
      Fires canned test payloads at both servers concurrently, diffs the
-     responses, writes import_data/verification_results.json, which the
+     responses, writes import/verification_results.json, which the
      monolith's GET /api/verification picks up automatically.
 
          python shadow_tester.py [shadow_config.json]
@@ -29,6 +29,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Windows consoles often default to a legacy code page; reconfigure so log lines
+# with unicode symbols don't raise OSError [Errno 22] during preflight.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import httpx  # pip install httpx
 
 
@@ -37,7 +46,7 @@ import httpx  # pip install httpx
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG   = "shadow_config.json"
-DEFAULT_OUTPUT   = "import_data/verification_results.json"
+DEFAULT_OUTPUT   = "import/verification_results.json"
 DEFAULT_MONOLITH = "http://localhost:8000"
 DEFAULT_SERVICE  = "http://localhost:9000"
 MAX_RETRIES      = 3
@@ -71,7 +80,7 @@ def _deep_diff(a: Any, b: Any, path: str = "") -> list[str]:
 
     if a_num and b_num:
         if not _floats_close(float(a), float(b)):
-            diffs.append(f"{path}: {a!r} != {b!r}  (Δ={abs(float(a)-float(b)):.2e})")
+            diffs.append(f"{path}: {a!r} != {b!r}  (delta={abs(float(a)-float(b)):.2e})")
         return diffs
 
     if type(a) != type(b):
@@ -165,14 +174,14 @@ async def _fire_with_retry(
         if status != -1:
             return status, body, ms
         if attempt < MAX_RETRIES:
-            print(f"    ↻  Retry {attempt}/{MAX_RETRIES} for {url} in {delay:.1f}s …")
+            print(f"    [retry] {attempt}/{MAX_RETRIES} for {url} in {delay:.1f}s ...")
             await asyncio.sleep(delay)
             delay *= 2
     return status, body, ms
 
 
 async def preflight_check(monolith_base: str, service_base: str, timeout: float) -> bool:
-    print("  Pre-flight check …")
+    print("  Pre-flight check ...")
     ok = True
     async with httpx.AsyncClient() as client:
         for label, base in [("Monolith", monolith_base), ("Microservice", service_base)]:
@@ -180,12 +189,12 @@ async def preflight_check(monolith_base: str, service_base: str, timeout: float)
                 url = base.rstrip("/") + probe
                 try:
                     r = await client.get(url, timeout=timeout)
-                    print(f"    ✅  {label} reachable at {base}  (HTTP {r.status_code})")
+                    print(f"    [OK]  {label} reachable at {base}  (HTTP {r.status_code})")
                     break
                 except httpx.RequestError:
                     continue
             else:
-                print(f"    ❌  {label} NOT reachable at {base}")
+                print(f"    [FAIL]  {label} NOT reachable at {base}")
                 ok = False
     print()
     return ok
@@ -222,13 +231,13 @@ async def run_one_test(
     diff   = _deep_diff(_pick(mono_body, eff_keys), _pick(svc_body, eff_keys))
     passed = (mono_status == svc_status) and not diff
 
-    icon = "✅" if passed else "❌"
+    icon = "PASS" if passed else "FAIL"
     print(f"  {icon}  [{test_id}]  mono={mono_status}  svc={svc_status}  "
-          f"Δfields={len(diff)}  ({mono_ms:.0f}ms / {svc_ms:.0f}ms)")
+          f"diff_fields={len(diff)}  ({mono_ms:.0f}ms / {svc_ms:.0f}ms)")
     for d in diff[:10]:
-        print(f"       ↳  {d}")
+        print(f"       ->  {d}")
     if len(diff) > 10:
-        print(f"       ↳  … and {len(diff) - 10} more")
+        print(f"       ->  ... and {len(diff) - 10} more")
 
     return {
         "id":                  test_id,
@@ -258,14 +267,14 @@ async def runner_main(cfg: dict[str, Any], output_path: Path) -> None:
     tests         = cfg.get("tests", [])
 
     print(f"\n{'='*60}")
-    print(f"  Shadow Tester  —  RUNNER MODE")
+    print(f"  Shadow Tester  -  RUNNER MODE")
     print(f"  Monolith : {monolith_base}")
     print(f"  Service  : {service_base}")
     print(f"  Tests    : {len(tests)}")
     print(f"{'='*60}\n")
 
     if not await preflight_check(monolith_base, service_base, timeout):
-        print("[shadow_tester] Aborting — one or both servers unreachable.")
+        print("[shadow_tester] Aborting - one or both servers unreachable.")
         sys.exit(1)
 
     if not tests:
@@ -356,9 +365,9 @@ async def _shadow_and_log(
         "timestamp":           _now_iso(),
     }
 
-    icon = "✅" if passed else "❌"
+    icon = "PASS" if passed else "FAIL"
     print(f"  {icon}  [live {method} {path}]  mono={mono_resp.status_code}  "
-          f"svc={svc_status}  Δ={len(diff)}")
+          f"svc={svc_status}  diff={len(diff)}")
 
     async with lock:
         results.append(entry)
@@ -440,7 +449,7 @@ async def middleware_main(cfg: dict[str, Any], output_path: Path) -> None:
     service_base  = cfg.get("service_base",  DEFAULT_SERVICE)
 
     print(f"\n{'='*60}")
-    print(f"  Shadow Tester  —  MIDDLEWARE MODE")
+    print(f"  Shadow Tester  -  MIDDLEWARE MODE")
     print(f"  Proxy listens  : http://localhost:{port}")
     print(f"  Forwards to    : {monolith_base}")
     print(f"  Shadows to     : {service_base}")
@@ -448,13 +457,13 @@ async def middleware_main(cfg: dict[str, Any], output_path: Path) -> None:
     print(f"{'='*60}\n")
 
     if not await preflight_check(monolith_base, service_base, timeout):
-        print("[shadow_tester] Aborting — one or both servers unreachable.")
+        print("[shadow_tester] Aborting - one or both servers unreachable.")
         sys.exit(1)
 
     shadow_app = build_shadow_app(cfg, output_path)
     config     = uvicorn.Config(shadow_app, host="0.0.0.0", port=port, log_level="warning")
     server     = uvicorn.Server(config)
-    print(f"  Send traffic to http://localhost:{port} — results stream to {output_path}\n")
+    print(f"  Send traffic to http://localhost:{port} - results stream to {output_path}\n")
     await server.serve()
 
 
@@ -472,7 +481,7 @@ def _cli() -> None:
 
     if not config_path.exists():
         print(f"[shadow_tester] Config not found: {config_path}")
-        print("Copy shadow_config.example.json → shadow_config.json and edit it.")
+        print("Copy shadow_config.example.json to shadow_config.json and edit it.")
         sys.exit(1)
 
     cfg         = json.loads(config_path.read_text(encoding="utf-8"))

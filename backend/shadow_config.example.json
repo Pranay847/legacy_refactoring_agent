@@ -4,7 +4,7 @@
   "monolith_base": "http://localhost:8000",
   "service_base":  "http://localhost:9000",
 
-  "output_path": "import_data/verification_results.json",
+  "output_path": "import/verification_results.json",
 
   "timeout_seconds": 10,
 
