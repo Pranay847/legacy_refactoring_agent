@@ -1,0 +1,32 @@
+#!/bin/bash
+# Rendered by Terraform (templatefile). Only $${repo_url} is a Terraform var;
+# all other $VAR references are plain shell.
+set -euxo pipefail
+
+dnf update -y
+dnf install -y docker git
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+# Docker Compose v2 plugin
+DOCKER_CONFIG=/usr/local/lib/docker
+mkdir -p "$DOCKER_CONFIG/cli-plugins"
+curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+  -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+
+cd /home/ec2-user
+git clone ${repo_url} legacy_refactoring_agent
+chown -R ec2-user:ec2-user legacy_refactoring_agent
+
+cat > /home/ec2-user/NEXT_STEPS.txt <<'EOF'
+Bootstrap complete. Finish the deploy:
+
+  cd ~/legacy_refactoring_agent
+  cp .env.example .env
+  nano .env        # NEO4J_PASSWORD, ANTHROPIC_API_KEY, FRONTEND_URL=http://<public-ip>
+  docker compose -f docker-compose.prod.yml up -d --build
+
+Then open http://<public-ip>/
+EOF
+chown ec2-user:ec2-user /home/ec2-user/NEXT_STEPS.txt

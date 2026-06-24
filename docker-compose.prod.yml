@@ -1,0 +1,110 @@
+# ============================================================================
+# Full-stack production compose: frontend + backend API + arq worker + Neo4j
+# (with GDS) + Redis. Designed to run on a single host (e.g. one EC2 box).
+#
+#   1. Fill in .env  (cp .env.example .env  &&  edit)
+#   2. docker compose -f docker-compose.prod.yml up -d --build
+#   3. Open http://<host>/        (Neo4j browser at http://<host>:7474)
+#
+# NEO4J_URI and REDIS_URL are overridden below to use the in-network service
+# names, so the values in .env (localhost) are only used for non-Docker runs.
+# ============================================================================
+name: legacy-refactoring-agent
+
+services:
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: lra-neo4j
+    ports:
+      - "7474:7474"   # Neo4j Browser (optional; lock down in your security group)
+      - "7687:7687"   # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in your .env}
+      - NEO4J_PLUGINS=["graph-data-science"]
+      - NEO4J_dbms_security_procedures_unrestricted=gds.*
+      - NEO4J_dbms_security_procedures_allowlist=gds.*
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: lra-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lra-backend
+    container_name: lra-backend
+    env_file: .env
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - NEO4J_URI=bolt://neo4j:7687
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"   # direct API access for debugging (frontend uses the proxy)
+    volumes:
+      - app_import:/app/import       # shared with worker
+      - app_services:/app/services   # shared with worker
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    image: lra-backend               # reuses the backend image built above
+    container_name: lra-worker
+    command: ["arq", "backend.worker.WorkerSettings"]
+    env_file: .env
+    environment:
+      - ENVIRONMENT=production
+      - NEO4J_URI=bolt://neo4j:7687
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - app_import:/app/import       # SAME volumes as backend: worker reads
+      - app_services:/app/services   # clusters.json and writes generated services
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE_URL=/api
+        # Add publishable Clerk/Supabase keys here if you use those features:
+        # - VITE_CLERK_PUBLISHABLE_KEY=${VITE_CLERK_PUBLISHABLE_KEY:-}
+    image: lra-frontend
+    container_name: lra-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  app_import:
+  app_services:

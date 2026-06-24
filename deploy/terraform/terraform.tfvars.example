@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and fill in.
+region           = "us-east-1"
+key_name         = "my-ec2-keypair"   # name of an EXISTING EC2 key pair
+allowed_ssh_cidr = "203.0.113.4/32"   # your public IP as a /32
+
+# Optional overrides:
+# instance_type        = "t3.large"
+# expose_neo4j_browser = true
+# disk_gb              = 30

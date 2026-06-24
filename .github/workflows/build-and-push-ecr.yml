@@ -1,0 +1,77 @@
+# ============================================================================
+# Build the backend + frontend images and push them to Amazon ECR.
+#
+# One-time setup in GitHub (Settings -> Secrets and variables -> Actions):
+#   Secret:    AWS_ROLE_ARN        IAM role ARN this workflow assumes via OIDC
+#   Variables: AWS_REGION          e.g. us-east-1
+#              ECR_BACKEND_REPO    e.g. legacy-refactoring-agent-backend
+#              ECR_FRONTEND_REPO   e.g. legacy-refactoring-agent-frontend
+#
+# AWS prerequisites (create once):
+#   - Two ECR repositories matching the names above.
+#   - An IAM role with an OIDC trust policy for token.actions.githubusercontent.com
+#     (sub = repo:Pranay847/legacy_refactoring_agent:ref:refs/heads/main) and
+#     permissions for ecr:GetAuthorizationToken + push to those repos
+#     (AmazonEC2ContainerRegistryPowerUser covers it).
+# ============================================================================
+name: Build and push images to ECR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "frontend/Dockerfile"
+      - ".github/workflows/build-and-push-ecr.yml"
+  workflow_dispatch:
+
+# Required for OIDC federation to AWS (no long-lived access keys).
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  BACKEND_REPO: ${{ vars.ECR_BACKEND_REPO }}
+  FRONTEND_REPO: ${{ vars.ECR_FRONTEND_REPO }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push backend image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$BACKEND_REPO"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" -f Dockerfile .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Build & push frontend image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$FRONTEND_REPO"
+          docker build \
+            --build-arg VITE_API_BASE_URL=/api \
+            -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" \
+            -f frontend/Dockerfile ./frontend
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"

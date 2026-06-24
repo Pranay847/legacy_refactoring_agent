@@ -1,0 +1,33 @@
+# --- VCS / Python caches ---
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+*.log
+
+# --- Frontend (built as its own image, see frontend/Dockerfile) ---
+frontend
+
+# --- Generated + runtime artifacts (created at runtime, mounted as volumes) ---
+services
+import
+loadtest
+supabase
+
+# --- Secrets: passed in at runtime via compose env_file, never baked into the image ---
+.env
+.env.*
+!.env.example
+
+# --- Build/deploy meta not needed inside the image ---
+deploy
+README.md
+docker-compose*.yml
+Dockerfile
