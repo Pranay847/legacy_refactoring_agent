@@ -1,0 +1,3 @@
+maceengine.dev {
+  reverse_proxy frontend:80
+}

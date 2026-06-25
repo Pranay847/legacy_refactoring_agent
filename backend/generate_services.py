@@ -12,10 +12,19 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or os.getenv("API_KEY")
 MODEL             = "claude-sonnet-4-5"
 FAST_MODEL        = "claude-haiku-4-5"
 SMALL_CLUSTER_THRESHOLD = 6  # clusters at or below this many functions use FAST_MODEL
-MAX_TOKENS        = 4096
+MAX_TOKENS        = 8192   # higher cap: services now carry real models, not stubs
+
+# --- Provider selection -----------------------------------------------------
+# LLM_PROVIDER = "anthropic" (default, paid API) or "ollama" (local, free).
+# When "ollama", the Anthropic model arg is ignored and OLLAMA_MODEL is used.
+LLM_PROVIDER    = (os.getenv("LLM_PROVIDER") or "anthropic").strip().lower()
+OLLAMA_BASE_URL = (os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL") or "qwen2.5-coder:7b"
 
 
 def model_for_cluster_size(size: int) -> str:
+    if LLM_PROVIDER == "ollama":
+        return OLLAMA_MODEL
     return FAST_MODEL if size <= SMALL_CLUSTER_THRESHOLD else MODEL
 
 #Load clusters
@@ -182,15 +191,153 @@ def collect_source_for_cluster(cluster: dict, repo_root: str) -> dict[str, str]:
 
     return collected
 
+# ---------------------------------------------------------------------------
+# Dependency-closure context
+# ---------------------------------------------------------------------------
+# A cluster contains only FUNCTIONS, so the supporting definitions a function
+# leans on (imports, data models, DB sessions, helper globals) are never
+# extracted — which is why the model otherwise invents mocks for them. The
+# closure below walks each member function's AST, resolves the module-level
+# names it references, and returns their real source so the model can reproduce
+# them faithfully instead of stubbing. Python-only (uses the AST).
+
+MAX_CONTEXT_CHARS = 12000  # cap supporting context so a huge graph can't blow up the prompt
+
+
+def _free_names(node: ast.AST) -> set:
+    """Every bare identifier referenced anywhere inside an AST node."""
+    names = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            names.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            cur = n
+            while isinstance(cur, ast.Attribute):
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                names.add(cur.id)
+    return names
+
+
+def _module_closure(member_nodes, tree, source, member_names):
+    """Resolve the module-level defs/imports the member functions depend on.
+
+    Returns (import_srcs, def_srcs): original source snippets, transitively
+    closed within this module (a model that uses Base pulls Base; a session
+    built from `engine` pulls `engine`; etc.).
+    """
+    imports = []   # (bound_names:set, src:str)
+    defs = {}      # name -> ast node (class / function / assignment)
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound = {(a.asname or a.name).split(".")[0] for a in node.names}
+            imports.append((bound, ast.get_source_segment(source, node) or ""))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defs[node.name] = node
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    defs[t.id] = node
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defs[node.target.id] = node
+
+    work = set()
+    for fn in member_nodes:
+        work |= _free_names(fn)
+
+    needed = set()
+    included = []          # ast nodes, in discovery order
+    seen_names = set()
+    while work:
+        name = work.pop()
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        needed.add(name)
+        node = defs.get(name)
+        if node is not None and name not in member_names:
+            included.append(node)
+            work |= _free_names(node)   # transitive closure
+
+    import_srcs = [src for bound, src in imports if src and (bound & needed)]
+
+    def_srcs, seen_ids = [], set()
+    for node in sorted(included, key=lambda n: getattr(n, "lineno", 0)):
+        if id(node) in seen_ids:
+            continue
+        seen_ids.add(id(node))
+        seg = ast.get_source_segment(source, node)
+        if seg:
+            def_srcs.append(seg)
+    return import_srcs, def_srcs
+
+
+def gather_dependency_context(cluster: dict, repo_root: str) -> str:
+    """Collect the real supporting definitions the cluster's functions rely on.
+
+    Python-only; non-Python modules contribute no extra context (the regex
+    scanner has no symbol table to resolve against).
+    """
+    root = Path(repo_root)
+
+    members_by_module: dict[str, list[str]] = {}
+    for member in cluster["members"]:
+        module = member["module"]
+        short  = member["function"][len(module) + 1:]
+        members_by_module.setdefault(module, []).append(short)
+
+    all_imports, all_defs = [], []
+    seen = set()
+
+    for module, member_names in members_by_module.items():
+        source_file = resolve_module_file(root, module)
+        if not source_file or source_file.suffix != ".py":
+            continue
+        try:
+            source = source_file.read_text(encoding="utf-8", errors="replace")
+            tree   = ast.parse(source)
+        except SyntaxError:
+            continue
+
+        member_set   = set(member_names)
+        member_nodes = [
+            n for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in member_set
+        ]
+        if not member_nodes:
+            continue
+
+        import_srcs, def_srcs = _module_closure(member_nodes, tree, source, member_set)
+        for src in import_srcs:
+            key = src.strip()
+            if key and key not in seen:
+                seen.add(key); all_imports.append(src)
+        for src in def_srcs:
+            key = src.strip()[:120]
+            if key and key not in seen:
+                seen.add(key); all_defs.append(src)
+
+    parts = []
+    if all_imports:
+        parts.append("\n".join(all_imports))
+    parts.extend(all_defs)
+    context = "\n\n".join(parts).strip()
+
+    if len(context) > MAX_CONTEXT_CHARS:
+        context = context[:MAX_CONTEXT_CHARS] + "\n# … (supporting context truncated)"
+    return context
+
+
 #Build the prompt
-def build_prompt(cluster_name: str, service_name: str, sources: dict[str, str]) -> str:
+def build_prompt(cluster_name: str, service_name: str, sources: dict[str, str],
+                 context: str = "") -> str:
     functions_block = "\n\n".join(
         f"# --- {name} ---\n{code}"
         for name, code in sources.items()
     )
 
-    return textwrap.dedent(f"""
-        You are an expert software architect specializing in migrating legacy Python
+    rules = textwrap.dedent(f"""
+        You are an expert software architect specializing in migrating legacy
         monoliths to microservices.
 
         Below is the source code for the '{service_name}' module extracted from a
@@ -200,21 +347,32 @@ def build_prompt(cluster_name: str, service_name: str, sources: dict[str, str]) 
         1. Create a complete main.py with a FastAPI app and one POST endpoint per function.
         2. Create Pydantic request/response models for every endpoint payload.
         3. Create logic.py containing the original functions with core logic EXACTLY as-is.
-        4. Create requirements.txt with fastapi, uvicorn, and any other needed packages.
-        5. Create a Dockerfile that runs the service on port 8000.
-        6. Return ONLY file contents separated by headers exactly like this:
+        4. Reproduce the SUPPORTING DEFINITIONS (imports, data models, DB sessions,
+           helpers) faithfully in logic.py — do NOT replace them with mocks, stubs,
+           or placeholder implementations.
+        5. Create requirements.txt with fastapi, uvicorn, and any other needed packages.
+        6. Create a Dockerfile that runs the service on port 8000.
+        7. Return ONLY file contents separated by headers exactly like this:
            ### main.py
            ### logic.py
            ### requirements.txt
            ### Dockerfile
-
-        Here is the extracted source code:
-
-        {functions_block}
     """).strip()
 
-#Call Claude API
+    parts = [rules, "FUNCTIONS TO EXPOSE AS ENDPOINTS:\n\n" + functions_block]
+    if context:
+        parts.append(
+            "SUPPORTING DEFINITIONS the functions above depend on — these come from "
+            "the original codebase; reproduce them faithfully, do NOT mock them:\n\n"
+            + context
+        )
+    return "\n\n".join(parts).strip()
+
+#Call the LLM — Anthropic API by default, or a local Ollama model when LLM_PROVIDER=ollama
 def call_claude(prompt: str, model: str = MODEL) -> str:
+    if LLM_PROVIDER == "ollama":
+        return _call_ollama(prompt)
+
     if not ANTHROPIC_API_KEY:
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set. Add it to your .env file and restart the terminal."
@@ -230,6 +388,33 @@ def call_claude(prompt: str, model: str = MODEL) -> str:
     )
     print(" done.")
     return message.content[0].text
+
+
+def _call_ollama(prompt: str) -> str:
+    """Generate with a local Ollama model (free). Uses Ollama's native /api/chat."""
+    import httpx
+
+    print(f"  Sending to Ollama ({OLLAMA_MODEL})...", end="", flush=True)
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                # Ollama defaults num_predict to 128, which would truncate the files.
+                "options": {"num_predict": MAX_TOKENS},
+            },
+            timeout=600.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"Ollama request failed: {exc}. Is the Ollama server running and is "
+            f"model '{OLLAMA_MODEL}' pulled?  (ollama pull {OLLAMA_MODEL})"
+        ) from exc
+    print(" done.")
+    return resp.json()["message"]["content"]
 
 #Parse and save generated files
 def parse_generated_files(response: str) -> dict[str, str]:
@@ -325,7 +510,8 @@ def main():
         for name in sources:
             print(f"    - {name}")
 
-        prompt = build_prompt(cluster_name, service_name, sources)
+        context = gather_dependency_context(cluster_data, args.repo)
+        prompt = build_prompt(cluster_name, service_name, sources, context)
 
         try:
             response = call_claude(prompt)

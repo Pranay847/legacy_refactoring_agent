@@ -32,36 +32,42 @@ function deriveProjectNameFromFiles(files) {
   return fileName || "Untitled Project";
 }
 
-// Directories and file extensions to exclude from uploads
+// Directories and files to exclude from uploads
 const IGNORED_DIRS = new Set([
   "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
-  ".env", "dist", "build", ".next", ".nuxt", "coverage",
+  "dist", "build", ".next", ".nuxt", "coverage",
   ".idea", ".vscode", ".DS_Store", "vendor", "target",
   "bin", "obj", ".tox", ".mypy_cache", ".pytest_cache",
 ]);
 
-const SOURCE_EXTENSIONS = new Set([
-  ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs",
-  ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift",
-  ".kt", ".scala", ".lua", ".r", ".m", ".sql", ".sh", ".bash",
-  ".json", ".yaml", ".yml", ".toml", ".xml", ".html", ".css",
-  ".txt", ".md", ".cfg", ".ini", ".env", ".dockerfile",
-  ".gitignore", ".editorconfig",
+const IGNORED_FILES = new Set([
+  ".env", ".env.local", ".env.production", ".npmrc", ".netrc",
+]);
+
+const BLOCKED_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tiff",
+  ".mp4", ".mov", ".avi", ".mkv", ".mp3", ".wav", ".flac",
+  ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+  ".exe", ".dll", ".so", ".dylib", ".class", ".pyc", ".pyo",
+  ".lock",
 ]);
 
 function filterSourceFiles(files) {
   return files.filter((file) => {
     const path = file.webkitRelativePath || file.name;
     const segments = path.split("/");
+    const fileName = file.name.toLowerCase();
 
     // Exclude files inside ignored directories
     if (segments.some((seg) => IGNORED_DIRS.has(seg))) return false;
+    if (IGNORED_FILES.has(fileName)) return false;
 
-    // Include files with recognised source/config extensions
+    // Send source/config/text-like files and zip archives. Let the backend
+    // report zero detected functions instead of silently dropping the upload.
     const lastDot = file.name.lastIndexOf(".");
-    if (lastDot === -1) return false;
+    if (lastDot === -1) return true;
     const ext = file.name.slice(lastDot).toLowerCase();
-    return SOURCE_EXTENSIONS.has(ext);
+    return !BLOCKED_EXTENSIONS.has(ext);
   });
 }
 
@@ -139,6 +145,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeView, setActiveView] = useState("dashboard");
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
   const dashboardRef = useRef(null);
 
   const filteredSessions = store.sessions.filter((session) => {
@@ -158,8 +165,12 @@ export default function App() {
     return haystacks.includes(query);
   });
 
-  const handleOpenUploadPicker = () => {
+  const handleOpenFilePicker = () => {
     fileInputRef.current?.click();
+  };
+
+  const handleOpenFolderPicker = () => {
+    folderInputRef.current?.click();
   };
 
   const handleFilesPicked = async (event) => {
@@ -374,7 +385,7 @@ export default function App() {
     if (!repoPath) {
       store.addMessage(session.id, {
         role: "assistant",
-        content: "No repository path set. Upload a folder first, or enter a local repo path manually.",
+        content: "No repository path set. Upload source files first, or enter a local repo path manually.",
       });
       return;
     }
@@ -745,6 +756,13 @@ export default function App() {
         className="hidden"
         onChange={handleFilesPicked}
         multiple
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFilesPicked}
+        multiple
         webkitdirectory="true"
         directory=""
       />
@@ -756,7 +774,7 @@ export default function App() {
         activeSession={store.activeSession}
         activeSessionId={store.activeSessionId}
         onSelect={store.setActiveSessionId}
-        onCreateFromUpload={handleOpenUploadPicker}
+        onCreateFromUpload={handleOpenFolderPicker}
         onCreateFromGithub={handleOpenGithubModal}
         searchQuery={searchQuery}
         onSearchChange={handleSearchChange}
@@ -776,7 +794,8 @@ export default function App() {
         {/* Header */}
         <SessionHeader
           session={store.activeSession}
-          onUploadClick={handleOpenUploadPicker}
+          onUploadFilesClick={handleOpenFilePicker}
+          onUploadFolderClick={handleOpenFolderPicker}
           title={(VIEW_META[activeView] || VIEW_META.dashboard).title}
           subtitle={(VIEW_META[activeView] || VIEW_META.dashboard).subtitle}
         />

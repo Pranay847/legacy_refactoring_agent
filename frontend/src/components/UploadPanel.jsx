@@ -35,14 +35,14 @@ export default function UploadPanel({ session, setSessionFiles, setSessionResult
             : "border-zinc-300 bg-zinc-50 dark:bg-zinc-800 hover:border-zinc-400"
         }`}
       >
-        <input {...getInputProps()} webkitdirectory="true" directory="" multiple />
+        <input {...getInputProps()} multiple />
         <div className="mx-auto flex max-w-md flex-col items-center">
           <UploadCloud className="mb-4 text-zinc-500" size={36} />
           <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-300">
-            Drag and drop a project folder
+            Drag and drop source files
           </h3>
           <p className="mt-2 text-sm text-zinc-500">
-            Upload source code repositories or documentation folders for local LLM ingestion.
+            Upload source code files or folders for local LLM ingestion.
           </p>
         </div>
       </div>

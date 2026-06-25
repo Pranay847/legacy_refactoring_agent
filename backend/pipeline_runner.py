@@ -26,7 +26,7 @@ from graph_loader import (
     read_clusters, format_clusters,
 )
 from generate_services import (
-    load_clusters, collect_source_for_cluster,
+    load_clusters, collect_source_for_cluster, gather_dependency_context,
     build_prompt, call_claude, parse_generated_files, save_service,
     model_for_cluster_size,
 )
@@ -124,7 +124,8 @@ def _generate_one_cluster(repo_path: str, cluster_name: str, cluster_data: dict,
         }
 
     model    = model_for_cluster_size(cluster_data["size"])
-    prompt   = build_prompt(cluster_name, service_name, sources)
+    context  = gather_dependency_context(cluster_data, repo_path)
+    prompt   = build_prompt(cluster_name, service_name, sources, context)
     response = call_claude(prompt, model=model)
     files    = parse_generated_files(response)
 

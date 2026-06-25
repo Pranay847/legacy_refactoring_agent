@@ -70,6 +70,8 @@ services:
     image: lra-backend               # reuses the backend image built above
     container_name: lra-worker
     command: ["arq", "backend.worker.WorkerSettings"]
+    healthcheck:
+      disable: true
     env_file: .env
     environment:
       - ENVIRONMENT=production
@@ -95,10 +97,23 @@ services:
         # - VITE_CLERK_PUBLISHABLE_KEY=${VITE_CLERK_PUBLISHABLE_KEY:-}
     image: lra-frontend
     container_name: lra-frontend
-    ports:
-      - "80:80"
     depends_on:
       backend:
+        condition: service_started
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: lra-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
         condition: service_started
     restart: unless-stopped
 
@@ -108,3 +123,5 @@ volumes:
   redis_data:
   app_import:
   app_services:
+  caddy_data:
+  caddy_config:

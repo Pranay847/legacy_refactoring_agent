@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import traceback
+import zipfile
 from pathlib import Path
 from typing import List
 
@@ -154,6 +155,32 @@ def _clear_stale_artifacts():
         artifact = IMPORT_DIR / filename
         if artifact.exists():
             artifact.unlink()
+
+
+def _safe_extract_zip(zip_path: Path, target_dir: Path) -> list[str]:
+    """Extract a zip upload without allowing paths to escape target_dir."""
+    extracted: list[str] = []
+    target_root = target_dir.resolve()
+
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+
+            member_path = Path(member.filename)
+            if member_path.is_absolute() or ".." in member_path.parts:
+                continue
+
+            dest = (target_dir / member_path).resolve()
+            if target_root not in (dest, *dest.parents):
+                continue
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as src, dest.open("wb") as out:
+                out.write(src.read())
+            extracted.append(member.filename)
+
+    return extracted
  
  
 # ---------------------------------------------------------------------------
@@ -338,12 +365,24 @@ async def ingest_files(request: Request):
             dest.parent.mkdir(parents=True, exist_ok=True)
             content = await f.read()
             dest.write_bytes(content)
-            saved_files.append(rel_path)
+            if dest.suffix.lower() == ".zip":
+                saved_files.extend(_safe_extract_zip(dest, upload_dir))
+            else:
+                saved_files.append(rel_path)
  
-        # Run the scanner on the uploaded directory
-        functions = step1_scan(str(upload_dir))
-        pipeline_state["step1_done"] = True
-        pipeline_state["repo_path"] = str(upload_dir)
+        # Run the scanner on the uploaded directory. Upload success should not
+        # depend on whether the scanner can identify functions in the files.
+        try:
+            functions = step1_scan(str(upload_dir))
+            pipeline_state["step1_done"] = True
+            pipeline_state["repo_path"] = str(upload_dir)
+            scan_warning = None
+        except RuntimeError as scan_error:
+            if "No functions found" not in str(scan_error):
+                raise
+            functions = []
+            pipeline_state["repo_path"] = str(upload_dir)
+            scan_warning = str(scan_error)
  
         # Build per-file results for the frontend
         file_results = []
@@ -362,14 +401,15 @@ async def ingest_files(request: Request):
         # Include any uploaded files that had no functions
         seen_modules = set(modules_seen.keys())
         for sf in saved_files:
-            if sf.endswith(".py"):
-                module_guess = sf.replace("/", ".").replace("\\", ".").removesuffix(".py")
-                if module_guess not in seen_modules:
-                    file_results.append({
-                        "file": sf,
-                        "chunks": 0,
-                        "summary": "No functions found",
-                    })
+            module_guess = sf.replace("/", ".").replace("\\", ".")
+            if "." in module_guess:
+                module_guess = module_guess.rsplit(".", 1)[0]
+            if module_guess not in seen_modules:
+                file_results.append({
+                    "file": sf,
+                    "chunks": 0,
+                    "summary": "No functions found",
+                })
 
         # Clean up form resources
         await form.close()
@@ -379,6 +419,7 @@ async def ingest_files(request: Request):
             "repo_path": str(upload_dir),
             "functions": len(functions),
             "edges": sum(len(fn.calls) for fn in functions),
+            "warning": scan_warning,
         }
     except HTTPException:
         raise

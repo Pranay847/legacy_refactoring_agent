@@ -4,7 +4,8 @@ import AccountControls from "./AccountControls";
 
 export default function SessionHeader({
   session,
-  onUploadClick,
+  onUploadFilesClick,
+  onUploadFolderClick,
   title = "Dashboard",
   subtitle = "Overview of your monolith analysis",
 }) {
@@ -62,11 +63,19 @@ export default function SessionHeader({
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={onUploadClick}
+          onClick={onUploadFilesClick}
           className="btn-primary"
         >
           <UploadCloud size={16} />
-          Upload New Project
+          Upload Files
+        </button>
+        <button
+          type="button"
+          onClick={onUploadFolderClick}
+          className="btn-secondary"
+        >
+          <UploadCloud size={16} />
+          Upload Folder
         </button>
         {AUTH_ENABLED ? <AccountControls /> : null}
       </div>

@@ -872,7 +872,7 @@ function ValidationResults({ id, session, verification, isLoading }) {
       {totalTests === 0 && !isLoading && (
         <div className="mt-4 rounded-lg px-3 py-2" style={{ background: "rgba(148, 163, 184, 0.08)", border: "1px solid rgba(148, 163, 184, 0.15)" }}>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            No shadow tests yet. Run <code style={{ color: "var(--text-secondary)" }}>python backend/shadow_tester.py</code> to compare monolith vs microservice behavior.
+            No validation results yet. Shadow validation appears here after a configured test suite compares the original monolith with generated microservices.
           </p>
         </div>
       )}
