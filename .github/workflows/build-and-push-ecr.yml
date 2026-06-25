@@ -17,15 +17,9 @@
 name: Build and push images to ECR
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "requirements.txt"
-      - "Dockerfile"
-      - "frontend/Dockerfile"
-      - ".github/workflows/build-and-push-ecr.yml"
+  # Manual-only: run from the Actions tab when you actually want to ship images to ECR.
+  # Re-add a `push:` trigger once the AWS OIDC role, ECR repos, and the
+  # AWS_ROLE_ARN secret + AWS_REGION/ECR_* variables are configured in GitHub.
   workflow_dispatch:
 
 # Required for OIDC federation to AWS (no long-lived access keys).
