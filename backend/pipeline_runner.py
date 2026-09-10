@@ -19,6 +19,11 @@ load_env()
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
+try:  # central config loads the repo-root .env on import
+    from config import settings
+except ImportError:  # pragma: no cover
+    from backend.config import settings
+
 from ingester import scan_repo, write_edges_csv, write_nodes_csv
 from graph_loader import (
     get_driver, wait_for_neo4j, clear_graph, load_edges,
@@ -61,7 +66,20 @@ def step1_scan(repo_path: str):
     return functions
 
 
+def _use_neo4j() -> bool:
+    """True when steps 2-3 should go through Neo4j + GDS instead of networkx."""
+    return settings.clustering_backend == "neo4j"
+
+
 def step2_load_graph():
+    if not _use_neo4j():
+        # networkx builds its graph straight from edges.csv inside step 3,
+        # so there is nothing to load. Kept as a no-op so callers and the
+        # step numbering stay identical across both backends.
+        banner(2, "Loading graph (networkx — in-process, no database)")
+        print("  Using edges.csv directly; no graph database to load.")
+        return
+
     banner(2, "Loading graph into Neo4j")
     driver = get_driver()
     with driver.session() as session:
@@ -74,13 +92,20 @@ def step2_load_graph():
 
 def step3_cluster():
     banner(3, "Running Louvain community detection")
-    driver = get_driver()
-    with driver.session() as session:
-        drop_gds_graph_if_exists(session)
-        project_gds_graph(session)
-        run_louvain(session)
-        raw_clusters = read_clusters(session)
-    driver.close()
+
+    if _use_neo4j():
+        driver = get_driver()
+        with driver.session() as session:
+            drop_gds_graph_if_exists(session)
+            project_gds_graph(session)
+            run_louvain(session)
+            raw_clusters = read_clusters(session)
+        driver.close()
+    else:
+        from graph_clustering import cluster_from_edges_csv
+
+        raw_clusters = cluster_from_edges_csv(EDGES_CSV)
+
     clusters = format_clusters(raw_clusters)
     with open(CLUSTERS_JSON, "w", encoding="utf-8") as f:
         json.dump(clusters, f, indent=2)

@@ -3,7 +3,6 @@ import json
 import argparse
 import time
 from pathlib import Path
-from neo4j import GraphDatabase
 
 try:  # central config loads the repo-root .env on import
     from config import settings
@@ -17,6 +16,11 @@ NEO4J_PASSWORD = settings.neo4j_password
 GDS_GRAPH_NAME = "call_graph"
 
 def get_driver():
+    # Imported here, not at module scope, so this module stays importable when
+    # the neo4j package is absent — the CLUSTERING_BACKEND=networkx path needs
+    # format_clusters() from here but never opens a driver.
+    from neo4j import GraphDatabase
+
     return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 

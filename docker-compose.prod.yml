@@ -52,6 +52,10 @@ services:
     environment:
       - ENVIRONMENT=production
       - DEBUG=false
+      # This stack ships its own Neo4j with the GDS plugin, so opt back in to
+      # it explicitly — the application default is the database-free networkx
+      # backend, which is what makes a no-database deploy possible.
+      - CLUSTERING_BACKEND=neo4j
       - NEO4J_URI=bolt://neo4j:7687
       - REDIS_URL=redis://redis:6379/0
     ports:
@@ -75,6 +79,10 @@ services:
     env_file: .env
     environment:
       - ENVIRONMENT=production
+      # The worker only generates services from clusters.json and never runs
+      # clustering, but it is kept in step with the backend so the two cannot
+      # silently disagree if that ever changes.
+      - CLUSTERING_BACKEND=neo4j
       - NEO4J_URI=bolt://neo4j:7687
       - REDIS_URL=redis://redis:6379/0
     volumes:
