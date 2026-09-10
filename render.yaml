@@ -1,0 +1,67 @@
+# Render Blueprint — backend API only. The frontend deploys separately to Vercel.
+#
+# Connect this repo at https://dashboard.render.com/blueprints and Render reads
+# everything below, so none of it has to be set by hand in the dashboard.
+#
+# Requires the networkx clustering backend (CLUSTERING_BACKEND=networkx), which
+# needs no database. There is no free managed Neo4j with the GDS plugin, so the
+# Neo4j path cannot run on a free Render plan — use docker-compose.prod.yml on a
+# single host for that (see deploy/README-aws.md).
+
+services:
+  - type: web
+    name: legacy-refactoring-agent-api
+    runtime: docker
+    plan: free
+    region: oregon
+
+    # Deploys the merged swap. Point this at feat/networkx-louvain instead if
+    # you want to deploy before merging that PR.
+    branch: main
+
+    # The Dockerfile lives at the repo root and COPYs backend/, so the build
+    # context is the whole repo, not backend/.
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # REQUIRED OVERRIDE. The Dockerfile's CMD ends with a hardcoded
+    # `--port 8000`, but Render assigns a port via $PORT and health-checks that
+    # one — a container on 8000 is killed as unhealthy. This is the Procfile's
+    # `web:` line, which binds $PORT correctly.
+    dockerCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+
+    # FastAPI always serves /openapi.json and it touches no external service,
+    # so it stays green regardless of configuration.
+    healthCheckPath: /openapi.json
+
+    envVars:
+      # Drops localhost from the CORS allowlist; see Settings.cors_origins.
+      - key: ENVIRONMENT
+        value: production
+
+      # In-process Louvain, no database. Explicit rather than relying on the
+      # application default so a future default change cannot silently break
+      # this deploy.
+      - key: CLUSTERING_BACKEND
+        value: networkx
+
+      # THE allowed CORS origin in production — scheme included, no trailing
+      # slash, no path. Must match the Vercel deployment exactly, or browser
+      # calls fail CORS while curl still succeeds.
+      - key: FRONTEND_URL
+        value: https://legacy-refactoring-agent.vercel.app
+
+      # Secret: `sync: false` makes Render prompt for it once in the dashboard
+      # and keeps it out of git. Never replace this with a literal value.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+    # Free plan notes, both of which bite during a demo:
+    #   * the service sleeps after ~15 min idle (~50s cold start), and
+    #   * there is no persistent disk, so import/ and services/ plus the
+    #     in-memory pipeline_state reset on every restart and deploy.
+    # A paid plan with a disk mounted at /app fixes the second:
+    # disk:
+    #   name: pipeline-artifacts
+    #   mountPath: /app
+    #   sizeGB: 1
