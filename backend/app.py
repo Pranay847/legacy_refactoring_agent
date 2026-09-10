@@ -257,8 +257,12 @@ class CheckoutRequest(BaseModel):
 @app.get("/api/status")
 def get_status():
     """Return the current pipeline state plus which integrations are enabled."""
+    # Only probe Neo4j when it is actually the clustering backend. Under
+    # networkx there is no database, and an unconditional probe would block
+    # this endpoint on a TCP timeout — which matters because platform health
+    # checks poll it.
     neo4j_connected = False
-    if settings.neo4j_password:
+    if settings.clustering_backend == "neo4j" and settings.neo4j_password:
         try:
             from neo4j import GraphDatabase
 
@@ -283,6 +287,7 @@ def get_status():
         "error": pipeline_state["error"],
         "anthropic_configured": bool(settings.anthropic_api_key),
         "neo4j_connected": neo4j_connected,
+        "clustering_backend": settings.clustering_backend,
         # Feature flags only (no secret values) so the frontend can adapt its UI.
         "integrations": {
             "auth": settings.auth_enabled,

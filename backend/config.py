@@ -75,6 +75,12 @@ class Settings:
     generation_workers: int = _get_int("GENERATION_WORKERS", 5)
     generation_max_workers: int = _get_int("GENERATION_MAX_WORKERS", 10)
 
+    # Which Louvain implementation backs steps 2-3: "networkx" (in-process,
+    # no database) or "neo4j" (requires a server with the GDS plugin).
+    # Defaults to networkx so the backend deploys anywhere; the compose /
+    # EC2 stack sets CLUSTERING_BACKEND=neo4j explicitly to keep using GDS.
+    clustering_backend: str = (_get("CLUSTERING_BACKEND", "networkx") or "networkx").strip().lower()
+
     # --- CORS / frontend ---
     frontend_url: str | None = _get("FRONTEND_URL")
 
