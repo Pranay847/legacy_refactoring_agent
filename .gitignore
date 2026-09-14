@@ -9,6 +9,7 @@ venv/
 env/
 *.egg-info/
 .pytest_cache/
+.test-tmp/
 .mypy_cache/
 
 # IDE / local AI tooling
@@ -29,6 +30,7 @@ env/
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
+frontend/.npm-cache/
 import/uploads/
 import/edges.csv
 import/nodes.csv
