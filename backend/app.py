@@ -27,16 +27,10 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
  
-import importlib
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
  
-anthropic = None
-try:
-    anthropic = importlib.import_module("anthropic")
-except ImportError:
-    anthropic = None
  
 # ---------------------------------------------------------------------------
 # Ensure extractor modules are importable
@@ -54,6 +48,12 @@ from pipeline_runner import (
 )
 from validators import validate_clusters
 from generate_services import collect_source_for_cluster, dedup_service_names
+from llm_provider import (
+    call_llm,
+    generation_is_configured,
+    generation_worker_count,
+    validate_generation_config,
+)
 
 # Auth + billing + rate limiting (all gated: no-ops until their keys are configured).
 from auth import install_auth, get_principal, Principal
@@ -277,6 +277,8 @@ def get_status():
         except Exception:
             neo4j_connected = False
 
+    graph_connected = settings.clustering_backend == "networkx" or neo4j_connected
+    ai_configured = generation_is_configured()
     return {
         "step1_done": pipeline_state["step1_done"],
         "step2_done": pipeline_state["step2_done"],
@@ -288,6 +290,10 @@ def get_status():
         "anthropic_configured": bool(settings.anthropic_api_key),
         "neo4j_connected": neo4j_connected,
         "clustering_backend": settings.clustering_backend,
+        "graph_connected": graph_connected,
+        "graph_backend": settings.clustering_backend,
+        "ai_configured": ai_configured,
+        "llm_provider": settings.llm_provider,
         # Feature flags only (no secret values) so the frontend can adapt its UI.
         "integrations": {
             "auth": settings.auth_enabled,
@@ -295,6 +301,8 @@ def get_status():
             "supabase": settings.supabase_enabled,
             "async_jobs": settings.redis_enabled,
             "anthropic": bool(settings.anthropic_api_key),
+            "groq": bool(settings.groq_api_key),
+            "graph_backend": settings.clustering_backend,
         },
     }
  
@@ -592,11 +600,10 @@ def generate_service(req: GenerateRequest):
                    f"Available: {list(clusters.keys())}"
         )
 
-    if not settings.anthropic_api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="ANTHROPIC_API_KEY is not configured. Add it to your .env file.",
-        )
+    try:
+        validate_generation_config()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
  
     try:
         pipeline_state["error"] = None
@@ -604,6 +611,8 @@ def generate_service(req: GenerateRequest):
         filtered = {req.cluster_name: clusters[req.cluster_name]}
         results = step4_generate(req.repo_path, filtered, force=req.force)
         result = results[0] if results else {}
+        if result.get("status") == "error" or result.get("error"):
+            raise RuntimeError(result.get("error") or "Microservice generation failed.")
  
         return {
             "status": "ok",
@@ -643,9 +652,12 @@ def generate_all_services(req: GenerateAllRequest):
             detail=f"Clusters not found: {missing}"
         )
 
-    hard_cap = int(os.environ.get("GENERATION_MAX_WORKERS", "10"))
-    max_workers = req.max_workers or int(os.environ.get("GENERATION_WORKERS", "5"))
-    max_workers = max(1, min(max_workers, hard_cap, len(selected_names) or 1))
+    try:
+        validate_generation_config()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    max_workers = generation_worker_count(req.max_workers, len(selected_names))
     filtered = {name: clusters[name] for name in selected_names}
 
     try:
@@ -804,13 +816,7 @@ def get_graph():
 @app.post("/api/chat/", dependencies=[rate_limit("chat"), meter("chat")])
 @app.post("/api/chat", dependencies=[rate_limit("chat"), meter("chat")])
 def chat(req: ChatRequest):
-    """Answer questions about the scanned codebase using Claude."""
-    if anthropic is None:
-        raise HTTPException(status_code=500, detail="The 'anthropic' package is not installed.")
- 
-    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set")
+    """Answer questions about the scanned codebase using the configured model."""
  
     # --- FIX: Build context from current pipeline state, not just files ---
     context_str = req.context or ""
@@ -863,14 +869,11 @@ def chat(req: ChatRequest):
         + ("Cluster summary:\n" + context_str if context_str else "No codebase data available yet. The user needs to run a scan first.")
     )
  
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1024,
-        system=system,
-        messages=[{"role": "user", "content": req.message}],
-    )
-    return {"reply": response.content[0].text}
+    try:
+        answer = call_llm(req.message, system=system, max_tokens=1024)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"reply": answer}
  
  
 @app.get("/api/services/{name}/{file_name}")
