@@ -69,6 +69,15 @@ class Settings:
 
     # --- AI generation + graph database (existing) ---
     anthropic_api_key: str | None = _get("ANTHROPIC_API_KEY") or _get("API_KEY")
+    llm_provider: str = (_get("LLM_PROVIDER", "anthropic") or "anthropic").strip().lower()
+    groq_api_key: str | None = _get("GROQ_API_KEY")
+    groq_base_url: str = (_get("GROQ_BASE_URL", "https://api.groq.com/openai/v1") or "").rstrip("/")
+    groq_model: str = _get("GROQ_MODEL", "openai/gpt-oss-20b") or "openai/gpt-oss-20b"
+    groq_max_tokens: int = max(512, _get_int("GROQ_MAX_TOKENS", 4096))
+    groq_generation_workers: int = max(1, _get_int("GROQ_GENERATION_WORKERS", 1))
+    ollama_base_url: str = (_get("OLLAMA_BASE_URL", "http://localhost:11434") or "").rstrip("/")
+    ollama_model: str = _get("OLLAMA_MODEL", "qwen2.5-coder:7b") or "qwen2.5-coder:7b"
+    ollama_generation_workers: int = max(1, _get_int("OLLAMA_GENERATION_WORKERS", 1))
     neo4j_uri: str = _get("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user: str = _get("NEO4J_USER", "neo4j")
     neo4j_password: str | None = _get("NEO4J_PASSWORD")
