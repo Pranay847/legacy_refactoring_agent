@@ -32,9 +32,9 @@ from graph_loader import (
 )
 from generate_services import (
     load_clusters, collect_source_for_cluster, gather_dependency_context,
-    build_prompt, call_claude, parse_generated_files, save_service,
-    model_for_cluster_size,
+    build_prompt, parse_generated_files, save_service,
 )
+from llm_provider import call_llm, model_for_cluster_size
 from validators import validate_clusters
 
 BASE_DIR      = Path(__file__).resolve().parent.parent
@@ -151,7 +151,7 @@ def _generate_one_cluster(repo_path: str, cluster_name: str, cluster_data: dict,
     model    = model_for_cluster_size(cluster_data["size"])
     context  = gather_dependency_context(cluster_data, repo_path)
     prompt   = build_prompt(cluster_name, service_name, sources, context)
-    response = call_claude(prompt, model=model)
+    response = call_llm(prompt, model=model)
     files    = parse_generated_files(response)
 
     if not files:
@@ -186,7 +186,7 @@ def _generate_one_cluster(repo_path: str, cluster_name: str, cluster_data: dict,
 
 
 def step4_generate(repo_path: str, clusters: dict, force: bool = False, max_workers: int = 1) -> list[dict]:
-    banner(4, "Generating microservices via Claude API")
+    banner(4, "Generating microservices via configured AI provider")
     workers = max(1, min(max_workers, len(clusters) or 1))
     results: list[dict] = []
 
