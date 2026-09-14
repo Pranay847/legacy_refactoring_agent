@@ -41,8 +41,10 @@ export default function Sidebar({
   onViewChange,
 }) {
   const [backendStatus, setBackendStatus] = useState({
-    neo4j: "checking",
-    anthropic: "checking",
+    graph: "checking",
+    graphLabel: "Graph engine",
+    ai: "checking",
+    aiLabel: "AI provider",
   });
 
   // Check backend connectivity and integration readiness on mount.
@@ -50,12 +52,23 @@ export default function Sidebar({
     fetchStatus()
       .then((data) => {
         setBackendStatus({
-          neo4j: data.neo4j_connected ? "connected" : "disconnected",
-          anthropic: data.anthropic_configured ? "connected" : "disconnected",
+          graph: data.graph_connected ? "connected" : "disconnected",
+          graphLabel: data.graph_backend === "networkx" ? "NetworkX" : "Neo4j",
+          ai: data.ai_configured ? "connected" : "disconnected",
+          aiLabel: data.llm_provider === "groq"
+            ? "Groq"
+            : data.llm_provider === "ollama"
+              ? "Ollama"
+              : "Anthropic",
         });
       })
       .catch(() => {
-        setBackendStatus({ neo4j: "disconnected", anthropic: "disconnected" });
+        setBackendStatus({
+          graph: "disconnected",
+          graphLabel: "Graph engine",
+          ai: "disconnected",
+          aiLabel: "AI provider",
+        });
       });
   }, []);
 
@@ -160,46 +173,46 @@ export default function Sidebar({
             className="mb-2 text-xs font-medium"
             style={{
               color:
-                backendStatus.neo4j === "connected"
+                backendStatus.graph === "connected"
                   ? "var(--accent-emerald)"
-                  : backendStatus.neo4j === "checking"
+                  : backendStatus.graph === "checking"
                     ? "var(--accent-amber)"
                     : "var(--accent-rose)",
             }}
           >
-            {backendStatus.neo4j === "connected" && backendStatus.anthropic === "connected"
+            {backendStatus.graph === "connected" && backendStatus.ai === "connected"
               ? "All systems operational"
-              : backendStatus.neo4j === "checking" || backendStatus.anthropic === "checking"
+              : backendStatus.graph === "checking" || backendStatus.ai === "checking"
                 ? "Checking connections..."
                 : "Some services unavailable"}
           </p>
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
               <span
-                className={`status-dot ${backendStatus.neo4j === "connected" ? "connected" : "disconnected"}`}
+                className={`status-dot ${backendStatus.graph === "connected" ? "connected" : "disconnected"}`}
               />
               <span className="text-[11px]" style={{ color: "#94a3b8" }}>
-                Neo4j
+                {backendStatus.graphLabel}
               </span>
               <span className="ml-auto text-[10px]" style={{ color: "#64748b" }}>
-                {backendStatus.neo4j === "connected"
-                  ? "Connected"
-                  : backendStatus.neo4j === "checking"
+                {backendStatus.graph === "connected"
+                  ? "Ready"
+                  : backendStatus.graph === "checking"
                     ? "Checking"
                     : "Offline"}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <span
-                className={`status-dot ${backendStatus.anthropic === "connected" ? "connected" : "disconnected"}`}
+                className={`status-dot ${backendStatus.ai === "connected" ? "connected" : "disconnected"}`}
               />
               <span className="text-[11px]" style={{ color: "#94a3b8" }}>
-                Anthropic
+                {backendStatus.aiLabel}
               </span>
               <span className="ml-auto text-[10px]" style={{ color: "#64748b" }}>
-                {backendStatus.anthropic === "connected"
+                {backendStatus.ai === "connected"
                   ? "Configured"
-                  : backendStatus.anthropic === "checking"
+                  : backendStatus.ai === "checking"
                     ? "Checking"
                     : "Not configured"}
               </span>
